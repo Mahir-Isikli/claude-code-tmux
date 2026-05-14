@@ -1,6 +1,6 @@
 {
   "name": "claude-code-tmux",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Durable tmux controller for interactive Claude Code sessions, with a Pi extension and skill.",
   "type": "module",
   "author": "Mahir Isikli",
@@ -13,7 +13,8 @@
   },
   "homepage": "https://github.com/Mahir-Isikli/claude-code-tmux#readme",
   "bin": {
-    "ccmux": "bin/ccmux.mjs"
+    "ccmux": "bin/ccmux.mjs",
+    "claude-code-tmux": "bin/ccmux.mjs"
   },
   "exports": {
     ".": "./src/core.mjs",
@@ -50,6 +51,14 @@
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
   },
   "engines": {
     "node": ">=20"

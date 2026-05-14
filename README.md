@@ -24,10 +24,16 @@ npm install
 npm link
 ```
 
-Later, after publishing:
+From npm:
 
 ```bash
 npm install -g claude-code-tmux
+ccmux --help
+
+# or one-off
+npx claude-code-tmux --help
+
+# install the Pi extension plus bundled skill
 pi install npm:claude-code-tmux
 ```
 
