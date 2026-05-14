@@ -1,6 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
+  DEFAULT_EFFORT,
+  DEFAULT_MODEL,
   captureSession,
   listJobs,
   listSessions,
@@ -23,9 +25,11 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({
       name: Type.Optional(Type.String({ description: "Short session name. Defaults to cwd basename." })),
       cwd: Type.Optional(Type.String({ description: "Working directory for Claude Code." })),
-      permissionMode: Type.Optional(Type.String({ description: "Claude Code permission mode, for example default, acceptEdits, auto, plan, dontAsk, bypassPermissions." })),
-      model: Type.Optional(Type.String({ description: "Optional Claude Code model alias or full model id." })),
-      effort: Type.Optional(Type.String({ description: "Optional effort level, for example low, medium, high, xhigh, max." })),
+      permissionMode: Type.Optional(Type.String({ description: "Optional Claude Code permission mode. ccmux uses dangerously skip permissions by default." })),
+      model: Type.Optional(Type.String({ description: `Claude Code model alias or full id. Defaults to ${DEFAULT_MODEL}, currently latest Opus.` })),
+      effort: Type.Optional(Type.String({ description: `Effort level, for example high, xhigh, max. Defaults to ${DEFAULT_EFFORT}.` })),
+      dangerouslySkipPermissions: Type.Optional(Type.Boolean({ description: "Pass --dangerously-skip-permissions. Defaults to true." })),
+      agentsMd: Type.Optional(Type.Boolean({ description: "Auto-import AGENTS.md files from parent directories. Defaults to true." })),
       remoteControl: Type.Optional(Type.Boolean({ description: "Also enable Claude Code Remote Control." })),
     }),
     async execute(_toolCallId, params) {
@@ -35,6 +39,8 @@ export default function (pi: ExtensionAPI) {
         permissionMode: params.permissionMode,
         model: params.model,
         effort: params.effort,
+        dangerouslySkipPermissions: params.dangerouslySkipPermissions !== false,
+        agentsMd: params.agentsMd !== false,
         remoteControl: params.remoteControl ? params.name || true : false,
       });
       return {

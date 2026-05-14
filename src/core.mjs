@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 
 export const DEFAULT_HOME = path.join(os.homedir(), ".pi", "ccmux");
+export const DEFAULT_MODEL = process.env.CCMUX_MODEL || "opus";
+export const DEFAULT_EFFORT = process.env.CCMUX_EFFORT || "high";
 export const STATE_VERSION = 1;
 
 export class CcmuxError extends Error {
@@ -100,11 +102,78 @@ export function sessionExists(tmuxSession) {
   return result.status === 0;
 }
 
+export function discoverAgentsMd(cwd = process.cwd(), options = {}) {
+  const start = path.resolve(expandHome(cwd || process.cwd()));
+  const requested = options.agentsMd;
+  if (requested === false || requested === "false" || requested === "0" || requested === "none") return [];
+
+  const explicit = normalizeAgentsMdInput(requested);
+  if (explicit.length > 0) {
+    return uniquePaths(
+      explicit.map((file) => resolveFromCwd(file, start)).filter((file) => existsSync(file)),
+    );
+  }
+
+  const home = os.homedir();
+  const files = [];
+  let current = start;
+  while (true) {
+    const candidate = path.join(current, "AGENTS.md");
+    if (existsSync(candidate)) files.push(candidate);
+    const parent = path.dirname(current);
+    if (current === parent || current === home) break;
+    current = parent;
+  }
+  return uniquePaths(files.reverse());
+}
+
+export function prepareAgentsContext(options = {}) {
+  const cwd = path.resolve(expandHome(options.cwd || process.cwd()));
+  const files = discoverAgentsMd(cwd, { agentsMd: options.agentsMd });
+  if (files.length === 0) return { files: [], promptPath: undefined };
+
+  const home = ensureHome(options.home);
+  const dir = path.join(home, "instructions");
+  mkdirSync(dir, { recursive: true });
+  const promptPath = path.join(dir, `${safeName(options.name || path.basename(cwd))}.agents.md`);
+  const content = [
+    "# AGENTS.md instructions imported by ccmux",
+    "",
+    "Claude Code normally discovers CLAUDE.md. ccmux found these AGENTS.md files and is providing them as additional project instructions. Follow the more specific file when instructions conflict.",
+    "",
+    ...files.flatMap((file) => [
+      `## ${file}`,
+      "",
+      readFileSync(file, "utf8"),
+      "",
+    ]),
+  ].join("\n");
+  writeFileSync(promptPath, content);
+  return { files, promptPath };
+}
+
+function normalizeAgentsMdInput(value) {
+  if (!value || value === true || value === "true" || value === "auto") return [];
+  const values = Array.isArray(value) ? value : String(value).split(",");
+  return values.map((item) => item.trim()).filter(Boolean);
+}
+
+function resolveFromCwd(file, cwd) {
+  const expanded = expandHome(file);
+  return path.isAbsolute(expanded) ? path.resolve(expanded) : path.resolve(cwd, expanded);
+}
+
+function uniquePaths(files) {
+  return [...new Set(files)];
+}
+
 export function buildClaudeCommand(options = {}) {
   const argv = [options.claudePath || "claude"];
+  const model = options.model ?? DEFAULT_MODEL;
+  const effort = options.effort ?? DEFAULT_EFFORT;
   if (options.permissionMode) argv.push("--permission-mode", options.permissionMode);
-  if (options.model) argv.push("--model", options.model);
-  if (options.effort) argv.push("--effort", options.effort);
+  if (model) argv.push("--model", model);
+  if (effort) argv.push("--effort", effort);
   if (options.name) argv.push("--name", options.name);
   if (options.remoteControl) {
     argv.push("--remote-control");
@@ -112,7 +181,8 @@ export function buildClaudeCommand(options = {}) {
       argv.push(options.remoteControl.trim());
     }
   }
-  if (options.dangerouslySkipPermissions) argv.push("--dangerously-skip-permissions");
+  if (options.agentsPromptPath) argv.push("--append-system-prompt-file", options.agentsPromptPath);
+  if (options.dangerouslySkipPermissions !== false) argv.push("--dangerously-skip-permissions");
   if (Array.isArray(options.extraArgs)) argv.push(...options.extraArgs);
   return argv.map(shellQuote).join(" ");
 }
@@ -124,7 +194,18 @@ export function startSession(options = {}) {
   const cwd = path.resolve(expandHome(options.cwd || process.cwd()));
   const tmuxSession = options.tmuxSession || `ccmux-${name}`;
   const logPath = path.join(home, "logs", `${name}.ansi.log`);
-  const command = buildClaudeCommand({ ...options, name: options.claudeSessionName || name });
+  const model = options.model ?? DEFAULT_MODEL;
+  const effort = options.effort ?? DEFAULT_EFFORT;
+  const dangerouslySkipPermissions = options.dangerouslySkipPermissions !== false;
+  const agentsContext = prepareAgentsContext({ cwd, name, home, agentsMd: options.agentsMd });
+  const command = buildClaudeCommand({
+    ...options,
+    name: options.claudeSessionName || name,
+    model,
+    effort,
+    dangerouslySkipPermissions,
+    agentsPromptPath: agentsContext.promptPath,
+  });
   const state = loadState(home);
 
   if (!sessionExists(tmuxSession)) {
@@ -143,6 +224,11 @@ export function startSession(options = {}) {
     createdAt: state.sessions[name]?.createdAt ?? now,
     updatedAt: now,
     remoteControl: Boolean(options.remoteControl),
+    model,
+    effort,
+    dangerouslySkipPermissions,
+    agentsFiles: agentsContext.files,
+    agentsPromptPath: agentsContext.promptPath,
   };
   saveState(state, home);
 

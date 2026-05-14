@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildPrompt, safeName, stripAnsi } from "../src/core.mjs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { buildClaudeCommand, buildPrompt, discoverAgentsMd, prepareAgentsContext, safeName, stripAnsi } from "../src/core.mjs";
 
 test("safeName keeps tmux-safe names", () => {
   assert.equal(safeName("hello world/repo"), "hello-world-repo");
@@ -13,6 +16,38 @@ test("buildPrompt appends completion protocol", () => {
   assert.match(prompt, /CCMUX_DONE:/);
   assert.doesNotMatch(prompt, /CCMUX_DONE:abc/);
   assert.match(prompt, /\/tmp\/done\.json/);
+});
+
+test("buildClaudeCommand defaults to Opus, high effort, and dangerous skip permissions", () => {
+  const command = buildClaudeCommand({ name: "demo" });
+  assert.match(command, /'--model' 'opus'/);
+  assert.match(command, /'--effort' 'high'/);
+  assert.match(command, /'--dangerously-skip-permissions'/);
+  assert.doesNotMatch(buildClaudeCommand({ dangerouslySkipPermissions: false }), /dangerously-skip-permissions/);
+});
+
+test("discoverAgentsMd walks from parent to child and prepareAgentsContext writes prompt file", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccmux-test-"));
+  const home = path.join(root, "home");
+  const child = path.join(root, "repo", "nested");
+  mkdirSync(child, { recursive: true });
+  mkdirSync(home, { recursive: true });
+  const parentAgents = path.join(root, "repo", "AGENTS.md");
+  const childAgents = path.join(child, "AGENTS.md");
+  writeFileSync(parentAgents, "parent instructions");
+  writeFileSync(childAgents, "child instructions");
+
+  try {
+    assert.deepEqual(discoverAgentsMd(child), [parentAgents, childAgents]);
+    assert.deepEqual(discoverAgentsMd(child, { agentsMd: "AGENTS.md" }), [childAgents]);
+    const context = prepareAgentsContext({ cwd: child, home, name: "demo" });
+    assert.deepEqual(context.files, [parentAgents, childAgents]);
+    const prompt = readFileSync(context.promptPath, "utf8");
+    assert.match(prompt, /parent instructions/);
+    assert.match(prompt, /child instructions/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("stripAnsi removes common escape sequences", () => {

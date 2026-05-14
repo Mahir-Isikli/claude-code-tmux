@@ -42,7 +42,26 @@ Requirements:
 Start a session:
 
 ```bash
-ccmux start --name demo --cwd . --permission-mode acceptEdits
+ccmux start --name demo --cwd .
+```
+
+By default, `ccmux start` launches Claude Code with:
+
+```bash
+claude --model opus --effort high --dangerously-skip-permissions
+```
+
+Claude Code resolves `opus` to the latest Opus model, currently Opus 4.7. You can override model and effort:
+
+```bash
+ccmux start --name demo --cwd . --model sonnet --effort xhigh
+ccmux start --name demo --cwd . --model claude-opus-4-7 --effort max
+```
+
+For a safer interactive session, opt out of bypass mode:
+
+```bash
+ccmux start --name demo --cwd . --safe-permissions
 ```
 
 Send work and wait for the completion protocol:
@@ -89,10 +108,29 @@ The extension registers these tools:
 
 Typical flow inside Pi:
 
-1. Start a Claude Code session for the repo.
-2. Send a task with `ccmux_send`.
-3. If the task runs long, use `ccmux_capture` or attach to the tmux session.
-4. Use `ccmux_steer` for corrections while Claude Code is running.
+1. Start a Claude Code session for the repo with `ccmux_start`.
+2. The default model is `opus`, the default effort is `high`, and permission prompts are bypassed.
+3. Send a task with `ccmux_send`.
+4. If the task runs long, use `ccmux_capture` or attach to the tmux session.
+5. Use `ccmux_steer` for corrections while Claude Code is running.
+
+## AGENTS.md support
+
+Claude Code already reads `CLAUDE.md`. Many agent projects use `AGENTS.md` instead. On start, `ccmux` auto-discovers `AGENTS.md` files from the working directory upward to your home directory, combines them, and passes them to Claude Code with `--append-system-prompt-file`.
+
+This means users do not need to symlink `AGENTS.md` to `CLAUDE.md`. If both files exist, Claude Code sees its normal `CLAUDE.md` context plus the imported `AGENTS.md` instructions.
+
+Disable this behavior if needed:
+
+```bash
+ccmux start --name demo --cwd . --no-agents-md
+```
+
+Use an explicit file if you want:
+
+```bash
+ccmux start --name demo --cwd . --agents-md ./AGENTS.md
+```
 
 ## Completion detection
 
@@ -117,6 +155,6 @@ This package is a terminal automation layer around the official interactive Clau
 ## Current limitations
 
 - Terminal completion detection is heuristic.
-- Claude Code workspace trust and permission prompts can block progress until a human attaches or until you choose a suitable Claude Code permission mode.
+- `ccmux` starts Claude Code with `--dangerously-skip-permissions` by default. Use `--safe-permissions` if you want Claude Code prompts.
 - It is not a Pi model provider. In Pi, it is a subagent tool that can edit files through Claude Code.
 - Streaming is based on terminal capture, not structured Claude Code events.

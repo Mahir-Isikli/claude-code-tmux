@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import {
   CcmuxError,
+  DEFAULT_EFFORT,
+  DEFAULT_MODEL,
   captureSession,
   killSession,
   listJobs,
@@ -18,7 +20,7 @@ function printHelp() {
   console.log(`ccmux: durable tmux controller for interactive Claude Code
 
 Usage:
-  ccmux start [--name NAME] [--cwd DIR] [--permission-mode MODE] [--model MODEL] [--remote-control]
+  ccmux start [--name NAME] [--cwd DIR] [--model MODEL] [--effort LEVEL] [--remote-control] [--safe-permissions] [--no-agents-md]
   ccmux send [--session NAME] [--wait] [--timeout-ms MS] [--settle-ms MS] "prompt"
   ccmux steer [--session NAME] "message"
   ccmux status
@@ -28,8 +30,14 @@ Usage:
   ccmux attach [--session NAME]
   ccmux kill [--session NAME]
 
+Defaults:
+  model: ${DEFAULT_MODEL} (Claude Code resolves this to the latest Opus, currently Opus 4.7)
+  effort: ${DEFAULT_EFFORT}
+  permissions: --dangerously-skip-permissions
+  AGENTS.md: auto-imported from parent directories
+
 Examples:
-  ccmux start --name demo --cwd . --permission-mode acceptEdits
+  ccmux start --name demo --cwd .
   ccmux send --session demo --wait "Inspect the repo and summarize it."
   ccmux steer --session demo "Keep the scope small."
   ccmux attach --session demo
@@ -99,7 +107,8 @@ async function main() {
       model: opts.model,
       effort: opts.effort,
       remoteControl: opts["remote-control"] === true ? opts.name || true : opts["remote-control"],
-      dangerouslySkipPermissions: asBool(opts["dangerously-skip-permissions"]),
+      dangerouslySkipPermissions: !(asBool(opts["safe-permissions"]) || asBool(opts["no-dangerously-skip-permissions"])),
+      agentsMd: asBool(opts["no-agents-md"]) ? false : opts["agents-md"] ?? true,
       extraArgs: opts._,
     });
     printJson(session);
