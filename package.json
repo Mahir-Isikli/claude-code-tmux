@@ -14,6 +14,7 @@
     "bin",
     "src",
     "extensions",
+    "skills",
     "README.md",
     "LICENSE"
   ],
@@ -27,6 +28,9 @@
   "pi": {
     "extensions": [
       "./extensions/pi.ts"
+    ],
+    "skills": [
+      "./skills"
     ]
   },
   "scripts": {

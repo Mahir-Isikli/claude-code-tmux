@@ -106,6 +106,12 @@ The extension registers these tools:
 - `ccmux_status`
 - `ccmux_capture`
 
+The package also bundles a skill:
+
+- `/skill:claude-code-tmux`
+
+Use the skill when an agent needs the ccmux workflow, CLI fallback commands, AGENTS.md behavior, troubleshooting notes, or public packaging guidance.
+
 Typical flow inside Pi:
 
 1. Start a Claude Code session for the repo with `ccmux_start`.
