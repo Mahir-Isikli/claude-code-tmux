@@ -1,0 +1,45 @@
+{
+  "name": "claude-code-tmux",
+  "version": "0.1.0",
+  "description": "Durable tmux controller for interactive Claude Code sessions, with a Pi extension.",
+  "type": "module",
+  "bin": {
+    "ccmux": "./bin/ccmux.mjs"
+  },
+  "exports": {
+    ".": "./src/core.mjs",
+    "./pi-extension": "./extensions/pi.ts"
+  },
+  "files": [
+    "bin",
+    "src",
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "pi-package",
+    "claude-code",
+    "tmux",
+    "coding-agent",
+    "pi-extension"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/pi.ts"
+    ]
+  },
+  "scripts": {
+    "check": "node --check bin/ccmux.mjs && node --check src/core.mjs && node --test",
+    "test": "npm run check",
+    "smoke": "node ./bin/ccmux.mjs --help"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
