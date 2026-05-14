@@ -13,7 +13,7 @@
   },
   "homepage": "https://github.com/Mahir-Isikli/claude-code-tmux#readme",
   "bin": {
-    "ccmux": "./bin/ccmux.mjs"
+    "ccmux": "bin/ccmux.mjs"
   },
   "exports": {
     ".": "./src/core.mjs",
