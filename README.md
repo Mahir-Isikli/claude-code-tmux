@@ -18,7 +18,7 @@ If non-interactive Claude Code usage becomes a paid programmatic path, a local a
 Local development:
 
 ```bash
-git clone https://github.com/your-name/claude-code-tmux.git
+git clone https://github.com/Mahir-Isikli/claude-code-tmux.git
 cd claude-code-tmux
 npm install
 npm link
