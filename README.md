@@ -31,7 +31,7 @@ npm install -g claude-code-tmux
 ccmux --help
 
 # or one-off
-npx claude-code-tmux --help
+npx -y -p claude-code-tmux ccmux --help
 
 # install the Pi extension plus bundled skill
 pi install npm:claude-code-tmux

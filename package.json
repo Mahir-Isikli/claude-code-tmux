@@ -1,6 +1,6 @@
 {
   "name": "claude-code-tmux",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Durable tmux controller for interactive Claude Code sessions, with a Pi extension and skill.",
   "type": "module",
   "author": "Mahir Isikli",
