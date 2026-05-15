@@ -104,7 +104,16 @@ Install the package into Pi:
 pi install /absolute/path/to/claude-code-tmux
 ```
 
-The extension registers these tools:
+The extension registers a native Pi provider:
+
+- provider: `claude-code-tmux`
+- models: `opus`, `sonnet`
+
+Select it in Pi with `/model`, or start Pi with model filters that include `claude-code-tmux/*`.
+
+The provider relays Pi model requests into an interactive Claude Code session in tmux. It starts a ccmux session for the current workspace, sends Pi's recent context to Claude Code, and returns Claude Code's final response to Pi. This is still best-effort terminal automation, but it behaves like a normal Pi provider from the model picker.
+
+The extension also registers these tools:
 
 - `ccmux_start`
 - `ccmux_send`
@@ -118,13 +127,20 @@ The package also bundles a skill:
 
 Use the skill when an agent needs the ccmux workflow, CLI fallback commands, AGENTS.md behavior, troubleshooting notes, or public packaging guidance.
 
-Typical flow inside Pi:
+Typical tool flow inside Pi:
 
 1. Start a Claude Code session for the repo with `ccmux_start`.
 2. The default model is `opus`, the default effort is `high`, and permission prompts are bypassed.
 3. Send a task with `ccmux_send`.
 4. If the task runs long, use `ccmux_capture` or attach to the tmux session.
 5. Use `ccmux_steer` for corrections while Claude Code is running.
+
+Typical provider flow inside Pi:
+
+1. Install with `pi install npm:claude-code-tmux`.
+2. Select `claude-code-tmux/opus` from `/model`.
+3. Send a normal Pi prompt.
+4. Pi calls the provider, which relays the turn into Claude Code running in tmux.
 
 ## AGENTS.md support
 

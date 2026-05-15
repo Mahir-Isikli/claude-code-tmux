@@ -15,8 +15,8 @@ Use this skill when you need to delegate work to interactive Claude Code through
 - It starts `claude` in a durable tmux session.
 - It pastes prompts into that interactive terminal.
 - It captures terminal logs and waits for a best-effort completion protocol.
-- It can be used directly as a CLI or through Pi extension tools.
-- It is not a Pi model provider and not a hidden API client.
+- It can be used directly as a CLI, through Pi extension tools, or as a Pi provider.
+- The Pi provider is best-effort terminal automation behind a normal provider entry, not a hidden API client.
 
 Default start behavior:
 
@@ -26,9 +26,25 @@ claude --model opus --effort high --dangerously-skip-permissions
 
 Claude Code resolves `opus` to the latest Opus model. The user can override model and effort.
 
-## Prefer Pi tools when available
+## Native Pi provider
 
-If the package extension is loaded, prefer the Pi tools over shelling out:
+If the package extension is loaded, Pi registers:
+
+- provider: `claude-code-tmux`
+- models: `opus`, `sonnet`
+
+Use the provider when the user wants Pi itself to run on the tmux-backed Claude Code bridge. Select `claude-code-tmux/opus` from `/model` or ask the user to choose it. The provider sends Pi's recent context into a durable Claude Code tmux session and returns the final response to Pi.
+
+Provider limitations:
+
+- It cannot emit structured Pi tool calls. Claude Code uses its own tools inside tmux.
+- File edits can happen through Claude Code, outside Pi's normal tool transcript.
+- Streaming is currently final-response oriented, with terminal capture available for debugging.
+- If it times out, inspect with `ccmux_capture` or `ccmux capture`.
+
+## Prefer Pi tools for explicit delegation
+
+If the package extension is loaded and the user wants delegation rather than selecting a model provider, prefer the Pi tools over shelling out:
 
 1. `ccmux_status` to inspect existing sessions and jobs.
 2. `ccmux_start` to start or reuse a session for the workspace.
@@ -131,7 +147,7 @@ When writing docs, READMEs, npm descriptions, or GitHub copy for this project:
 - Say it helps agents coordinate a local interactive Claude Code session.
 - Do not frame it as bypassing billing, rate limits, product restrictions, or access controls.
 - Mention requirements clearly: `tmux`, `claude` on PATH, and a valid Claude Code setup.
-- Keep the distinction clear: CLI plus Pi extension tools, not a model provider.
+- Keep the distinction clear: CLI, Pi extension tools, and a best-effort native Pi provider.
 
 ## Troubleshooting
 

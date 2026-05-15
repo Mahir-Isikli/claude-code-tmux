@@ -295,6 +295,7 @@ export function makeJob(options = {}) {
     marker,
     donePath,
     protocol: options.protocol !== false,
+    requireDoneFile: options.requireDoneFile === true,
   });
   writeFileSync(promptPath, prompt);
 
@@ -319,19 +320,21 @@ export function makeJob(options = {}) {
   return job;
 }
 
-export function buildPrompt({ task, id, marker, donePath, protocol = true }) {
+export function buildPrompt({ task, id, marker, donePath, protocol = true, requireDoneFile = false }) {
   const body = String(task || "").trim();
   if (!protocol) return body;
   const markerPrefix = "CCMUX_DONE:";
+  const doneFileInstruction = requireDoneFile
+    ? `Before the final response, create this JSON file:\n${donePath}\n`
+    : `If you used tools or changed files, also create this JSON file before the final response:\n${donePath}\n`;
   return `${body}\n\n` +
     `<ccmux_completion_protocol>\n` +
     `This request is controlled by ccmux job ${id}.\n` +
     `When you are fully done, include one completion marker line in your final response.\n` +
     `The marker line is the literal prefix ${markerPrefix} followed immediately by this job id: ${id}\n` +
     `Do not add spaces, quotes, or punctuation to the marker line.\n` +
-    `If you used tools or changed files, also create this JSON file before the final response:\n` +
-    `${donePath}\n` +
-    `The JSON may contain status, summary, files_changed, and notes.\n` +
+    doneFileInstruction +
+    `The JSON may contain status, summary, final_response, files_changed, and notes.\n` +
     `</ccmux_completion_protocol>`;
 }
 
@@ -341,6 +344,9 @@ export function sendJob(job, options = {}) {
   const current = state.jobs[job.id] ?? job;
   tmux(["load-buffer", "-b", `ccmux-${job.id}`, job.promptPath]);
   tmux(["paste-buffer", "-dpr", "-b", `ccmux-${job.id}`, "-t", job.tmuxSession]);
+  const promptBytes = statSync(job.promptPath).size;
+  const defaultPasteDelayMs = Math.min(5000, Math.max(500, Math.ceil(promptBytes / 4)));
+  sleepSync(Number(options.pasteDelayMs ?? process.env.CCMUX_PASTE_DELAY_MS ?? defaultPasteDelayMs));
   tmux(["send-keys", "-t", job.tmuxSession, "Enter"]);
   const now = new Date().toISOString();
   state.jobs[job.id] = { ...current, status: "sent", sentAt: now, updatedAt: now };
@@ -466,6 +472,11 @@ export function stripAnsi(value) {
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sleepSync(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 function sleep(ms) {

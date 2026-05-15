@@ -1,4 +1,14 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  createAssistantMessageEventStream,
+  type Api,
+  type AssistantMessage,
+  type AssistantMessageEventStream,
+  type Context,
+  type Model,
+  type SimpleStreamOptions,
+} from "@earendil-works/pi-ai";
+import path from "node:path";
 import { Type } from "typebox";
 import {
   DEFAULT_EFFORT,
@@ -12,7 +22,39 @@ import {
   steerSession,
 } from "../src/core.mjs";
 
+const PROVIDER_ID = "claude-code-tmux";
+const PROVIDER_API = "claude-code-tmux-api";
+const PROVIDER_BASE_URL = "tmux://claude-code";
+const PROVIDER_API_KEY = "ccmux-local";
+
+interface CcmuxProviderState {
+  cwd: string;
+  activeProviderSession?: string;
+}
+
 export default function (pi: ExtensionAPI) {
+  const providerState: CcmuxProviderState = { cwd: process.cwd() };
+
+  pi.on("session_start", async (_event, ctx) => {
+    providerState.cwd = ctx.cwd;
+  });
+
+  pi.on("session_shutdown", async () => {
+    providerState.activeProviderSession = undefined;
+  });
+
+  pi.registerProvider(PROVIDER_ID, {
+    name: "Claude Code tmux",
+    baseUrl: PROVIDER_BASE_URL,
+    apiKey: PROVIDER_API_KEY,
+    api: PROVIDER_API,
+    models: [
+      providerModel("opus", "Claude Code tmux Opus"),
+      providerModel("sonnet", "Claude Code tmux Sonnet"),
+    ],
+    streamSimple: (model, context, options) => streamCcmuxProvider(model, context, options, providerState),
+  });
+
   pi.registerTool({
     name: "ccmux_start",
     label: "Start Claude Code tmux",
@@ -21,6 +63,7 @@ export default function (pi: ExtensionAPI) {
     promptGuidelines: [
       "Use ccmux_start before ccmux_send when no Claude Code tmux session exists for the requested workspace.",
       "Use ccmux_send to delegate coding work to interactive Claude Code in tmux, not as a normal LLM provider.",
+      "Use the claude-code-tmux provider when the user explicitly asks to run Pi itself on the tmux-backed Claude Code provider.",
     ],
     parameters: Type.Object({
       name: Type.Optional(Type.String({ description: "Short session name. Defaults to cwd basename." })),
@@ -155,4 +198,190 @@ export default function (pi: ExtensionAPI) {
       };
     },
   });
+}
+
+function providerModel(id: string, name: string) {
+  return {
+    id,
+    name,
+    reasoning: true,
+    thinkingLevelMap: {
+      off: "high",
+      minimal: "low",
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+    },
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1_000_000,
+    maxTokens: 64_000,
+  };
+}
+
+function streamCcmuxProvider(
+  model: Model<Api>,
+  context: Context,
+  options: SimpleStreamOptions | undefined,
+  state: CcmuxProviderState,
+): AssistantMessageEventStream {
+  const stream = createAssistantMessageEventStream();
+
+  (async () => {
+    const output: AssistantMessage = {
+      role: "assistant",
+      content: [],
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    };
+
+    stream.push({ type: "start", partial: output });
+    output.content.push({ type: "text", text: "" });
+    stream.push({ type: "text_start", contentIndex: 0, partial: output });
+
+    try {
+      const cwd = state.cwd || process.cwd();
+      const sessionName = providerSessionName(cwd, model.id);
+      const effort = effortFromReasoning(options?.reasoning);
+      const session = startSession({
+        name: sessionName,
+        cwd,
+        model: model.id,
+        effort,
+        dangerouslySkipPermissions: true,
+        agentsMd: true,
+      });
+      state.activeProviderSession = session.name;
+
+      const job = await sendPrompt({
+        session: session.name,
+        prompt: buildProviderPrompt(context, model),
+        wait: true,
+        timeoutMs: Number(process.env.CCMUX_PROVIDER_TIMEOUT_MS ?? 20 * 60 * 1000),
+        settleMs: Number(process.env.CCMUX_PROVIDER_SETTLE_MS ?? 2000),
+        protocol: true,
+        requireDoneFile: true,
+      });
+
+      if (options?.signal?.aborted) throw new Error("Request was aborted");
+
+      const text = providerResponseFromJob(job);
+      appendText(output, stream, text);
+      stream.push({ type: "text_end", contentIndex: 0, content: text, partial: output });
+      stream.push({ type: "done", reason: "stop", message: output });
+      stream.end();
+    } catch (error) {
+      output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+      output.errorMessage = error instanceof Error ? error.message : String(error);
+      stream.push({ type: "error", reason: output.stopReason, error: output });
+      stream.end();
+    }
+  })();
+
+  return stream;
+}
+
+function appendText(output: AssistantMessage, stream: AssistantMessageEventStream, text: string) {
+  const block = output.content[0];
+  if (block?.type === "text") {
+    block.text += text;
+    stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: output });
+  }
+}
+
+function providerSessionName(cwd: string, modelId: string) {
+  return safeName(`pi-provider-${path.basename(cwd)}-${modelId}`);
+}
+
+function effortFromReasoning(reasoning?: string) {
+  if (reasoning === "minimal" || reasoning === "low") return "low";
+  if (reasoning === "medium") return "medium";
+  if (reasoning === "xhigh") return "xhigh";
+  return "high";
+}
+
+function buildProviderPrompt(context: Context, model: Model<Api>) {
+  const systemPrompt = truncateText(context.systemPrompt || "", 8_000);
+  const messages = context.messages.slice(-14).map((message) => formatMessageForPrompt(message)).join("\n\n");
+  const toolsNote = context.tools?.length
+    ? `Pi exposed ${context.tools.length} tool definitions to its model provider. You are running inside Claude Code instead, so use Claude Code's own tools when useful and return normal text to Pi. Do not emit raw JSON tool calls.`
+    : "Pi did not expose tool definitions for this request.";
+
+  return [
+    "You are serving as Pi's native claude-code-tmux provider.",
+    "Behind the scenes, this request is being relayed into an interactive Claude Code session running in tmux.",
+    "Answer the latest user request as a normal assistant. If useful, use Claude Code's local tools in this tmux session to inspect or edit files.",
+    "Before finishing, write the ccmux done JSON with a `final_response` string containing exactly what Pi should display to the user.",
+    `Selected Claude Code model alias: ${model.id}.`,
+    "",
+    `<pi_system_prompt>\n${systemPrompt}\n</pi_system_prompt>`,
+    "",
+    `<pi_tools_note>\n${toolsNote}\n</pi_tools_note>`,
+    "",
+    `<pi_recent_messages>\n${messages}\n</pi_recent_messages>`,
+  ].join("\n");
+}
+
+function formatMessageForPrompt(message: any) {
+  if (message.role === "assistant") {
+    return `Assistant: ${formatAssistantContent(message.content)}`;
+  }
+  if (message.role === "toolResult") {
+    return `Tool result (${message.toolName || message.toolCallId || "tool"}): ${truncateText(formatContent(message.content), 6000)}`;
+  }
+  return `${capitalize(message.role || "message")}: ${truncateText(formatContent(message.content), 8000)}`;
+}
+
+function formatAssistantContent(content: any) {
+  if (!Array.isArray(content)) return truncateText(String(content ?? ""), 8000);
+  return truncateText(content.map((block) => {
+    if (block.type === "text") return block.text;
+    if (block.type === "thinking") return `[thinking omitted]`;
+    if (block.type === "toolCall") return `[tool call ${block.name} ${JSON.stringify(block.arguments ?? {})}]`;
+    return `[${block.type || "content"}]`;
+  }).join("\n"), 8000);
+}
+
+function formatContent(content: any) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return String(content ?? "");
+  return content.map((item) => {
+    if (item.type === "text") return item.text;
+    if (item.type === "image") return "[image]";
+    return `[${item.type || "content"}]`;
+  }).join("\n");
+}
+
+function providerResponseFromJob(job: any) {
+  if (job.status === "timeout") {
+    return `ccmux provider job ${job.id} timed out. Inspect it with: ccmux capture --session ${job.session} --lines 160`;
+  }
+  const done = job.doneFile;
+  if (typeof done?.final_response === "string" && done.final_response.trim()) return done.final_response.trim();
+  if (typeof done?.summary === "string" && done.summary.trim()) return done.summary.trim();
+  const tail = String(job.logTail || "").trim();
+  if (tail) return truncateText(tail, 4000);
+  return `ccmux provider job ${job.id} completed.`;
+}
+
+function truncateText(text: string, max: number) {
+  if (text.length <= max) return text;
+  const half = Math.floor((max - 32) / 2);
+  return `${text.slice(0, half)}\n[...truncated...]\n${text.slice(-half)}`;
+}
+
+function capitalize(value: string) {
+  return value ? value[0].toUpperCase() + value.slice(1) : value;
 }

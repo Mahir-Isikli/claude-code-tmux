@@ -16,6 +16,14 @@ test("buildPrompt appends completion protocol", () => {
   assert.match(prompt, /CCMUX_DONE:/);
   assert.doesNotMatch(prompt, /CCMUX_DONE:abc/);
   assert.match(prompt, /\/tmp\/done\.json/);
+  assert.match(prompt, /final_response/);
+  assert.match(prompt, /If you used tools or changed files/);
+});
+
+test("buildPrompt can require done JSON for provider mode", () => {
+  const prompt = buildPrompt({ task: "Answer", id: "abc", marker: "CCMUX_DONE:abc", donePath: "/tmp/done.json", requireDoneFile: true });
+  assert.match(prompt, /Before the final response, create this JSON file/);
+  assert.doesNotMatch(prompt, /If you used tools or changed files/);
 });
 
 test("buildClaudeCommand defaults to Opus, high effort, and dangerous skip permissions", () => {
