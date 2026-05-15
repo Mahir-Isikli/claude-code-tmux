@@ -16,6 +16,7 @@ import {
   captureSession,
   listJobs,
   listSessions,
+  prepareSessionForInput,
   safeName,
   sendPrompt,
   startSession,
@@ -264,6 +265,15 @@ function streamCcmuxProvider(
         agentsMd: true,
       });
       state.activeProviderSession = session.name;
+      if (!session.reused) {
+        sleepSync(Number(process.env.CCMUX_PROVIDER_STARTUP_DELAY_MS ?? 8000));
+      }
+      const readiness = prepareSessionForInput(session, {
+        timeoutMs: Number(process.env.CCMUX_PROVIDER_READY_TIMEOUT_MS ?? 45_000),
+      });
+      if (!readiness.ready) {
+        throw new Error(`Claude Code tmux session ${session.name} was not ready for input`);
+      }
 
       const job = await sendPrompt({
         session: session.name,
@@ -273,6 +283,7 @@ function streamCcmuxProvider(
         settleMs: Number(process.env.CCMUX_PROVIDER_SETTLE_MS ?? 2000),
         protocol: true,
         requireDoneFile: true,
+        pasteDelayMs: Number(process.env.CCMUX_PROVIDER_PASTE_DELAY_MS ?? 15000),
       });
 
       if (options?.signal?.aborted) throw new Error("Request was aborted");
@@ -380,6 +391,11 @@ function truncateText(text: string, max: number) {
   if (text.length <= max) return text;
   const half = Math.floor((max - 32) / 2);
   return `${text.slice(0, half)}\n[...truncated...]\n${text.slice(-half)}`;
+}
+
+function sleepSync(ms: number) {
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 function capitalize(value: string) {

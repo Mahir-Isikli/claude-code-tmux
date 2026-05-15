@@ -207,8 +207,9 @@ export function startSession(options = {}) {
     agentsPromptPath: agentsContext.promptPath,
   });
   const state = loadState(home);
+  const alreadyRunning = sessionExists(tmuxSession);
 
-  if (!sessionExists(tmuxSession)) {
+  if (!alreadyRunning) {
     tmux(["new-session", "-d", "-s", tmuxSession, "-c", cwd, command]);
   }
 
@@ -229,6 +230,7 @@ export function startSession(options = {}) {
     dangerouslySkipPermissions,
     agentsFiles: agentsContext.files,
     agentsPromptPath: agentsContext.promptPath,
+    reused: alreadyRunning,
   };
   saveState(state, home);
 
@@ -274,6 +276,31 @@ export function captureSession(name, options = {}) {
     text: result.stdout ?? "",
     error: result.stderr ?? "",
   };
+}
+
+export function prepareSessionForInput(name, options = {}) {
+  const session = typeof name === "string" ? getSession(name, options.home) : name;
+  const timeoutMs = Number(options.timeoutMs ?? 30_000);
+  const pollMs = Number(options.pollMs ?? 1000);
+  const started = Date.now();
+  let acceptedTrust = false;
+
+  while (Date.now() - started < timeoutMs) {
+    const result = tmux(["capture-pane", "-p", "-J", "-S", "-120", "-t", session.tmuxSession], { allowFailure: true });
+    const text = stripAnsi(result.stdout ?? "");
+    if (/Quick safety check|Yes, I trust this folder|Enter to confirm/.test(text)) {
+      tmux(["send-keys", "-t", session.tmuxSession, "C-m"]);
+      acceptedTrust = true;
+      sleepSync(2500);
+      continue;
+    }
+    if (/❯\s*$|bypass permissions on|accept edits on|plan mode on/.test(text)) {
+      return { ready: true, acceptedTrust, session };
+    }
+    sleepSync(pollMs);
+  }
+
+  return { ready: false, acceptedTrust, session };
 }
 
 export function makeJob(options = {}) {
@@ -342,12 +369,25 @@ export function sendJob(job, options = {}) {
   const home = ensureHome(options.home);
   const state = loadState(home);
   const current = state.jobs[job.id] ?? job;
-  tmux(["load-buffer", "-b", `ccmux-${job.id}`, job.promptPath]);
-  tmux(["paste-buffer", "-dpr", "-b", `ccmux-${job.id}`, "-t", job.tmuxSession]);
+  const bufferName = `ccmux-${job.id}`;
+  tmux(["load-buffer", "-b", bufferName, job.promptPath]);
   const promptBytes = statSync(job.promptPath).size;
   const defaultPasteDelayMs = Math.min(5000, Math.max(500, Math.ceil(promptBytes / 4)));
-  sleepSync(Number(options.pasteDelayMs ?? process.env.CCMUX_PASTE_DELAY_MS ?? defaultPasteDelayMs));
-  tmux(["send-keys", "-t", job.tmuxSession, "Enter"]);
+  const pasteDelayMs = Number(options.pasteDelayMs ?? process.env.CCMUX_PASTE_DELAY_MS ?? defaultPasteDelayMs);
+  const maxPasteAttempts = Number(options.maxPasteAttempts ?? process.env.CCMUX_MAX_PASTE_ATTEMPTS ?? 3);
+  for (let attempt = 1; attempt <= maxPasteAttempts; attempt++) {
+    tmux(["paste-buffer", "-p", "-r", "-b", bufferName, "-t", job.tmuxSession]);
+    sleepSync(pasteDelayMs);
+    const visible = stripAnsi(tmux(["capture-pane", "-p", "-J", "-S", "-120", "-t", job.tmuxSession]).stdout ?? "");
+    if (visible.includes(job.id)) break;
+    if (attempt === maxPasteAttempts) {
+      throw new CcmuxError(`Pasted prompt for job ${job.id}, but it was not visible in tmux pane`, { job });
+    }
+    tmux(["send-keys", "-t", job.tmuxSession, "C-u"]);
+    sleepSync(500);
+  }
+  tmux(["delete-buffer", "-b", bufferName], { allowFailure: true });
+  tmux(["send-keys", "-t", job.tmuxSession, "C-m"]);
   const now = new Date().toISOString();
   state.jobs[job.id] = { ...current, status: "sent", sentAt: now, updatedAt: now };
   saveState(state, home);
@@ -370,7 +410,7 @@ export function steerSession(options = {}) {
   writeFileSync(promptPath, message);
   tmux(["load-buffer", "-b", id, promptPath]);
   tmux(["paste-buffer", "-dpr", "-b", id, "-t", session.tmuxSession]);
-  tmux(["send-keys", "-t", session.tmuxSession, "Enter"]);
+  tmux(["send-keys", "-t", session.tmuxSession, "C-m"]);
   return { session: session.name, tmuxSession: session.tmuxSession, message };
 }
 
