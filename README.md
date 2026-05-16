@@ -240,9 +240,11 @@ The provider matrix covers:
 - fresh workspace trust prompt handling
 - reused provider sessions
 - file edits through Claude Code
+- native Pi tool calls through the `ccmux-pi-tool` bridge
 - `AGENTS.md` import
 - `opus` and `sonnet` provider models
 - hook event recording through `ccmux events`
+- shadow replay events and native Pi tool bridge events
 
 ## Remote Control
 

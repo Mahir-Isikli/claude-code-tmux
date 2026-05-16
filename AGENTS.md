@@ -17,7 +17,7 @@ The package is published on npm and GitHub:
 
 ## Current working release
 
-As of the hook-backed provider work, the working npm release is `0.3.0`.
+As of the native Pi tool bridge work, the working npm release is `0.5.0`.
 
 Important fixes in `0.2.1`:
 
@@ -37,6 +37,20 @@ Important additions in `0.3.0`:
 - Provider mode starts Claude Code with hooks enabled.
 - Provider streams hook lifecycle/tool progress as thinking/progress deltas while preserving the final response text.
 - Provider matrix script under `scripts/provider-matrix.mjs`.
+
+Important additions in `0.4.0`:
+
+- `ccmux_replay_tool_result` shadow replay tool.
+- Claude Code `PostToolUse` and `PostToolUseFailure` events are replayed into Pi as tool calls/results without re-running the underlying operation.
+- Matrix asserts `PiReplayToolResult` events.
+
+Important additions in `0.5.0`:
+
+- `bin/ccmux-pi-tool.mjs` bridge command for Claude Code to request native Pi tools.
+- Provider prompt includes a `pi_native_tool_bridge` command pattern with available Pi tools.
+- Provider intercepts pending Pi tool requests and emits the requested native Pi tool call.
+- Provider writes the real Pi tool result back for the blocking Claude Code bridge command.
+- Matrix asserts `PiNativeToolRequest` and `PiNativeToolResult` events.
 
 ## Design constraints
 
@@ -74,8 +88,8 @@ pi -e /Users/mahirisikli/Git/Personal/claude-code-tmux \
 Published npm smoke test:
 
 ```bash
-pi -e npm:claude-code-tmux@0.3.0 --list-models claude-code-tmux
-pi -e npm:claude-code-tmux@0.3.0 \
+pi -e npm:claude-code-tmux@0.5.0 --list-models claude-code-tmux
+pi -e npm:claude-code-tmux@0.5.0 \
   --model claude-code-tmux/opus \
   --thinking low \
   -p "Reply with exactly: npm provider works"
@@ -88,7 +102,7 @@ rm -rf /tmp/ccmux-provider-filetest
 mkdir -p /tmp/ccmux-provider-filetest
 cd /tmp/ccmux-provider-filetest
 printf '# file test\n' > README.md
-pi -e npm:claude-code-tmux@0.3.0 \
+pi -e npm:claude-code-tmux@0.5.0 \
   --model claude-code-tmux/opus \
   --thinking low \
   -p "Create a file named provider-native-test.txt in the current directory containing exactly this single line: native provider file edit works. Then reply exactly: file done"
@@ -114,7 +128,7 @@ The published npm package was tested for:
 - `claude-code-tmux/opus`
 - `claude-code-tmux/sonnet`
 
-The matrix passed on `0.2.1`. Re-run it for every provider release; `0.3.0` adds hook event assertions.
+The matrix passed on `0.2.1`, `0.3.0`, `0.4.0`, and `0.5.0`. Re-run it for every provider release; `0.5.0` adds native Pi tool bridge assertions.
 
 ## Release workflow
 
