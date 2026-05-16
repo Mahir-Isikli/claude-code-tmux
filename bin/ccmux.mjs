@@ -5,8 +5,10 @@ import {
   DEFAULT_MODEL,
   captureSession,
   killSession,
+  findActiveJobForSession,
   listJobs,
   listSessions,
+  readHookEvents,
   safeName,
   sendPrompt,
   startSession,
@@ -14,7 +16,7 @@ import {
   waitForJob,
 } from "../src/core.mjs";
 
-const COMMANDS = new Set(["start", "send", "steer", "status", "capture", "jobs", "wait", "attach", "kill", "help"]);
+const COMMANDS = new Set(["start", "send", "steer", "status", "capture", "jobs", "events", "wait", "attach", "kill", "help"]);
 
 function printHelp() {
   console.log(`ccmux: durable tmux controller for interactive Claude Code
@@ -26,6 +28,7 @@ Usage:
   ccmux status
   ccmux capture [--session NAME] [--lines N]
   ccmux jobs
+  ccmux events [--job JOB_ID] [--session NAME]
   ccmux wait JOB_ID [--timeout-ms MS] [--settle-ms MS]
   ccmux attach [--session NAME]
   ccmux kill [--session NAME]
@@ -151,6 +154,17 @@ async function main() {
 
   if (command === "jobs") {
     printJson(listJobs());
+    return;
+  }
+
+  if (command === "events") {
+    let jobId = opts.job || opts._[0];
+    if (!jobId && (opts.session || opts.name)) {
+      const job = findActiveJobForSession(opts.session || opts.name);
+      jobId = job?.id;
+    }
+    if (!jobId) throw new CcmuxError("events requires --job JOB_ID or --session NAME");
+    printJson(readHookEvents(jobId));
     return;
   }
 

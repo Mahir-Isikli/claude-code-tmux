@@ -146,7 +146,7 @@ The extension registers a native Pi provider:
 
 Select it in Pi with `/model`, or start Pi with model filters that include `claude-code-tmux/*`.
 
-The provider relays Pi model requests into an interactive Claude Code session in tmux. It starts a ccmux session for the current workspace, sends Pi's recent context to Claude Code, and returns Claude Code's final response to Pi. This is still best-effort terminal automation, but it behaves like a normal Pi provider from the model picker.
+The provider relays Pi model requests into an interactive Claude Code session in tmux. It starts a ccmux session for the current workspace, sends Pi's recent context to Claude Code, streams Claude Code hook lifecycle/tool progress as hidden thinking/progress, and returns Claude Code's final response to Pi. This is still best-effort terminal automation, but it behaves like a normal Pi provider from the model picker.
 
 The extension also registers these tools:
 
@@ -155,6 +155,13 @@ The extension also registers these tools:
 - `ccmux_steer`
 - `ccmux_status`
 - `ccmux_capture`
+
+Provider mode also injects temporary Claude Code hook settings. Hook events are recorded under `~/.pi/ccmux/events/` and can be inspected with:
+
+```bash
+ccmux events --session <session-name>
+ccmux events --job <job-id>
+```
 
 The package also bundles a skill:
 
@@ -206,6 +213,36 @@ CCMUX_DONE:<job-id>
 It also asks Claude Code to write a JSON done file under `.ccmux/jobs/` in the target workspace. The runner treats either the marker or the done file as completion.
 
 This is intentionally best-effort. Interactive terminal UIs are not stable APIs. If the marker is not seen, the tmux session may still have completed. Use `ccmux capture` or attach to check.
+
+## Testing
+
+Fast unit checks:
+
+```bash
+npm run check
+```
+
+Full local provider matrix. This starts real Claude Code tmux sessions and can take a few minutes:
+
+```bash
+npm run test:provider
+```
+
+Published npm matrix, useful after a release:
+
+```bash
+npm run test:provider:npm
+```
+
+The provider matrix covers:
+
+- provider registration
+- fresh workspace trust prompt handling
+- reused provider sessions
+- file edits through Claude Code
+- `AGENTS.md` import
+- `opus` and `sonnet` provider models
+- hook event recording through `ccmux events`
 
 ## Remote Control
 

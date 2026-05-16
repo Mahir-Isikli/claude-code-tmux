@@ -1,6 +1,6 @@
 {
   "name": "claude-code-tmux",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Durable tmux controller for interactive Claude Code sessions, with a Pi extension and skill.",
   "type": "module",
   "author": "Mahir Isikli",
@@ -21,12 +21,13 @@
     "./pi-extension": "./extensions/pi.ts"
   },
   "files": [
-    "bin",
-    "src",
-    "extensions",
-    "skills",
+    "LICENSE",
     "README.md",
-    "LICENSE"
+    "bin",
+    "extensions",
+    "scripts",
+    "skills",
+    "src"
   ],
   "keywords": [
     "pi-package",
@@ -45,9 +46,11 @@
     ]
   },
   "scripts": {
-    "check": "node --check bin/ccmux.mjs && node --check src/core.mjs && node --test",
+    "check": "node --check bin/ccmux.mjs && node --check bin/ccmux-hook.mjs && node --check src/core.mjs && node --check scripts/provider-matrix.mjs && node --test",
     "test": "npm run check",
-    "smoke": "node ./bin/ccmux.mjs --help"
+    "smoke": "node ./bin/ccmux.mjs --help",
+    "test:provider": "node scripts/provider-matrix.mjs --local",
+    "test:provider:npm": "node scripts/provider-matrix.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

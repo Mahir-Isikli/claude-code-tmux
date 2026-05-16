@@ -1,9 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildClaudeCommand, buildPrompt, discoverAgentsMd, prepareAgentsContext, safeName, stripAnsi } from "../src/core.mjs";
+import {
+  buildClaudeCommand,
+  buildHookCommand,
+  buildPrompt,
+  discoverAgentsMd,
+  extractJobIdFromText,
+  prepareAgentsContext,
+  prepareHookSettings,
+  readHookEvents,
+  recordHookEvent,
+  safeName,
+  stripAnsi,
+} from "../src/core.mjs";
 
 test("safeName keeps tmux-safe names", () => {
   assert.equal(safeName("hello world/repo"), "hello-world-repo");
@@ -53,6 +65,40 @@ test("discoverAgentsMd walks from parent to child and prepareAgentsContext write
     const prompt = readFileSync(context.promptPath, "utf8");
     assert.match(prompt, /parent instructions/);
     assert.match(prompt, /child instructions/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("hook settings include lifecycle and tool hooks", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccmux-hooks-"));
+  try {
+    const settings = prepareHookSettings({ home: root, name: "demo", hookCommand: "/tmp/fake-hook.mjs" });
+    assert.ok(existsSync(settings.settingsPath));
+    assert.match(buildHookCommand({ home: root, hookCommand: "/tmp/fake-hook.mjs" }), /fake-hook\.mjs/);
+    const parsed = JSON.parse(readFileSync(settings.settingsPath, "utf8"));
+    assert.ok(parsed.hooks.SessionStart);
+    assert.ok(parsed.hooks.UserPromptSubmit);
+    assert.ok(parsed.hooks.PreToolUse);
+    assert.ok(parsed.hooks.PostToolUse);
+    assert.ok(parsed.hooks.Stop);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("recordHookEvent maps Claude hook session ids to ccmux job ids", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccmux-events-"));
+  const jobId = "11111111-1111-4111-8111-111111111111";
+  try {
+    assert.equal(extractJobIdFromText(`This request is controlled by ccmux job ${jobId}.`), jobId);
+    recordHookEvent({ hook_event_name: "UserPromptSubmit", session_id: "claude-session", prompt: `ccmux job ${jobId}` }, { home: root });
+    recordHookEvent({ hook_event_name: "PreToolUse", session_id: "claude-session", tool_name: "Bash", tool_input: { command: "npm test" } }, { home: root });
+    recordHookEvent({ hook_event_name: "PostToolUse", session_id: "claude-session", tool_name: "Bash", tool_response: { success: true } }, { home: root });
+    const { events } = readHookEvents(jobId, { home: root });
+    assert.deepEqual(events.map((event) => event.hookEventName), ["UserPromptSubmit", "PreToolUse", "PostToolUse"]);
+    assert.equal(events[1].toolName, "Bash");
+    assert.equal(events[1].toolInput.command, "npm test");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -16,7 +16,9 @@ import {
   captureSession,
   listJobs,
   listSessions,
+  getJob,
   prepareSessionForInput,
+  readHookEvents,
   safeName,
   sendPrompt,
   startSession,
@@ -249,8 +251,6 @@ function streamCcmuxProvider(
     };
 
     stream.push({ type: "start", partial: output });
-    output.content.push({ type: "text", text: "" });
-    stream.push({ type: "text_start", contentIndex: 0, partial: output });
 
     try {
       const cwd = state.cwd || process.cwd();
@@ -263,6 +263,7 @@ function streamCcmuxProvider(
         effort,
         dangerouslySkipPermissions: true,
         agentsMd: true,
+        hooks: true,
       });
       state.activeProviderSession = session.name;
       if (!session.reused) {
@@ -275,22 +276,23 @@ function streamCcmuxProvider(
         throw new Error(`Claude Code tmux session ${session.name} was not ready for input`);
       }
 
-      const job = await sendPrompt({
+      const sent = await sendPrompt({
         session: session.name,
         prompt: buildProviderPrompt(context, model),
-        wait: true,
-        timeoutMs: Number(process.env.CCMUX_PROVIDER_TIMEOUT_MS ?? 20 * 60 * 1000),
-        settleMs: Number(process.env.CCMUX_PROVIDER_SETTLE_MS ?? 2000),
+        wait: false,
         protocol: true,
         requireDoneFile: true,
         pasteDelayMs: Number(process.env.CCMUX_PROVIDER_PASTE_DELAY_MS ?? 15000),
       });
 
+      const job = await waitForProviderJob(sent.id, output, stream, options);
       if (options?.signal?.aborted) throw new Error("Request was aborted");
 
+      endThinking(output, stream);
       const text = providerResponseFromJob(job);
+      startText(output, stream);
       appendText(output, stream, text);
-      stream.push({ type: "text_end", contentIndex: 0, content: text, partial: output });
+      stream.push({ type: "text_end", contentIndex: output.content.length - 1, content: text, partial: output });
       stream.push({ type: "done", reason: "stop", message: output });
       stream.end();
     } catch (error) {
@@ -304,12 +306,97 @@ function streamCcmuxProvider(
   return stream;
 }
 
+function startText(output: AssistantMessage, stream: AssistantMessageEventStream) {
+  output.content.push({ type: "text", text: "" });
+  stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
+}
+
 function appendText(output: AssistantMessage, stream: AssistantMessageEventStream, text: string) {
-  const block = output.content[0];
+  const contentIndex = output.content.length - 1;
+  const block = output.content[contentIndex];
   if (block?.type === "text") {
     block.text += text;
-    stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: output });
+    stream.push({ type: "text_delta", contentIndex, delta: text, partial: output });
   }
+}
+
+function startThinking(output: AssistantMessage, stream: AssistantMessageEventStream) {
+  if (output.content.some((block) => block.type === "thinking")) return;
+  output.content.push({ type: "thinking", thinking: "" } as any);
+  stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
+}
+
+function appendThinking(output: AssistantMessage, stream: AssistantMessageEventStream, text: string) {
+  startThinking(output, stream);
+  const contentIndex = output.content.findIndex((block) => block.type === "thinking");
+  const block = output.content[contentIndex] as any;
+  block.thinking += text;
+  stream.push({ type: "thinking_delta", contentIndex, delta: text, partial: output });
+}
+
+function endThinking(output: AssistantMessage, stream: AssistantMessageEventStream) {
+  const contentIndex = output.content.findIndex((block) => block.type === "thinking");
+  if (contentIndex === -1) return;
+  const block = output.content[contentIndex] as any;
+  stream.push({ type: "thinking_end", contentIndex, content: block.thinking, partial: output });
+}
+
+async function waitForProviderJob(
+  jobId: string,
+  output: AssistantMessage,
+  stream: AssistantMessageEventStream,
+  options?: SimpleStreamOptions,
+) {
+  const timeoutMs = Number(process.env.CCMUX_PROVIDER_TIMEOUT_MS ?? 20 * 60 * 1000);
+  const pollMs = Number(process.env.CCMUX_PROVIDER_EVENT_POLL_MS ?? 500);
+  const settleMs = Number(process.env.CCMUX_PROVIDER_SETTLE_MS ?? 2000);
+  const started = Date.now();
+  let hookOffset = 0;
+  let doneFileFirstSeenAt: number | undefined;
+
+  while (Date.now() - started < timeoutMs) {
+    if (options?.signal?.aborted) throw new Error("Request was aborted");
+
+    const hookRead = readHookEvents(jobId, { offset: hookOffset });
+    hookOffset = hookRead.nextOffset;
+    for (const event of hookRead.events) {
+      const line = formatHookProgress(event);
+      if (line) appendThinking(output, stream, `${line}\n`);
+    }
+
+    const job = getJob(jobId);
+    if (job.markerSeen) return job;
+    if (job.doneFile) {
+      doneFileFirstSeenAt ??= Date.now();
+      if (Date.now() - doneFileFirstSeenAt >= settleMs) return getJob(jobId);
+    }
+    await sleep(pollMs);
+  }
+
+  return { ...getJob(jobId), status: "timeout" };
+}
+
+function formatHookProgress(event: any) {
+  const name = event.hookEventName;
+  if (name === "PreToolUse") return `Claude Code tool start: ${event.toolName || "tool"}${formatToolInput(event)}`;
+  if (name === "PostToolUse") return `Claude Code tool done: ${event.toolName || "tool"}`;
+  if (name === "PostToolUseFailure") return `Claude Code tool failed: ${event.toolName || "tool"}`;
+  if (name === "PostToolBatch") return "Claude Code tool batch done";
+  if (name === "PermissionRequest") return `Claude Code permission request: ${event.toolName || "tool"}`;
+  if (name === "Notification") return `Claude Code notification: ${event.notificationType || event.message || "notification"}`;
+  if (name === "SubagentStart") return "Claude Code subagent started";
+  if (name === "SubagentStop") return "Claude Code subagent stopped";
+  if (name === "Stop") return "Claude Code turn stopped";
+  if (name === "StopFailure") return `Claude Code turn failed${event.error ? `: ${event.error}` : ""}`;
+  return undefined;
+}
+
+function formatToolInput(event: any) {
+  const input = event.toolInput || {};
+  const pathValue = input.file_path || input.path;
+  if (pathValue) return `(${pathValue})`;
+  if (event.toolName === "Bash" && input.command) return `(${truncateText(String(input.command), 120)})`;
+  return "";
 }
 
 function providerSessionName(cwd: string, modelId: string) {
@@ -396,6 +483,10 @@ function truncateText(text: string, max: number) {
 function sleepSync(ms: number) {
   if (!Number.isFinite(ms) || ms <= 0) return;
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function capitalize(value: string) {

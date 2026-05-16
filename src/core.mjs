@@ -1,13 +1,15 @@
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const DEFAULT_HOME = path.join(os.homedir(), ".pi", "ccmux");
 export const DEFAULT_MODEL = process.env.CCMUX_MODEL || "opus";
 export const DEFAULT_EFFORT = process.env.CCMUX_EFFORT || "high";
 export const STATE_VERSION = 1;
+export const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 export class CcmuxError extends Error {
   constructor(message, details = {}) {
@@ -42,6 +44,8 @@ export function ensureHome(home = DEFAULT_HOME) {
   mkdirSync(root, { recursive: true });
   mkdirSync(path.join(root, "logs"), { recursive: true });
   mkdirSync(path.join(root, "jobs"), { recursive: true });
+  mkdirSync(path.join(root, "events"), { recursive: true });
+  mkdirSync(path.join(root, "hooks"), { recursive: true });
   return root;
 }
 
@@ -167,6 +171,46 @@ function uniquePaths(files) {
   return [...new Set(files)];
 }
 
+export function hookCommandPath() {
+  return path.join(PACKAGE_ROOT, "bin", "ccmux-hook.mjs");
+}
+
+export function buildHookCommand(options = {}) {
+  const argv = [process.execPath, options.hookCommand || hookCommandPath(), "--home", ensureHome(options.home)];
+  return argv.map(shellQuote).join(" ");
+}
+
+export function prepareHookSettings(options = {}) {
+  const home = ensureHome(options.home);
+  const dir = path.join(home, "hooks");
+  mkdirSync(dir, { recursive: true });
+  const settingsPath = path.join(dir, `${safeName(options.name || "default")}.settings.json`);
+  const command = buildHookCommand({ home, hookCommand: options.hookCommand });
+  const hook = { type: "command", command, timeout: Number(process.env.CCMUX_HOOK_TIMEOUT_SECONDS ?? 5) };
+  const toolHook = { matcher: "", hooks: [hook] };
+  const turnHook = { hooks: [hook] };
+  const settings = {
+    hooks: {
+      SessionStart: [turnHook],
+      UserPromptSubmit: [turnHook],
+      PreToolUse: [toolHook],
+      PostToolUse: [toolHook],
+      PostToolUseFailure: [toolHook],
+      PostToolBatch: [turnHook],
+      PermissionRequest: [toolHook],
+      PermissionDenied: [toolHook],
+      Notification: [turnHook],
+      SubagentStart: [turnHook],
+      SubagentStop: [turnHook],
+      Stop: [turnHook],
+      StopFailure: [turnHook],
+      SessionEnd: [turnHook],
+    },
+  };
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  return { settingsPath, command, settings };
+}
+
 export function buildClaudeCommand(options = {}) {
   const argv = [options.claudePath || "claude"];
   const model = options.model ?? DEFAULT_MODEL;
@@ -181,6 +225,7 @@ export function buildClaudeCommand(options = {}) {
       argv.push(options.remoteControl.trim());
     }
   }
+  if (options.settingsPath) argv.push("--settings", options.settingsPath);
   if (options.agentsPromptPath) argv.push("--append-system-prompt-file", options.agentsPromptPath);
   if (options.dangerouslySkipPermissions !== false) argv.push("--dangerously-skip-permissions");
   if (Array.isArray(options.extraArgs)) argv.push(...options.extraArgs);
@@ -198,6 +243,7 @@ export function startSession(options = {}) {
   const effort = options.effort ?? DEFAULT_EFFORT;
   const dangerouslySkipPermissions = options.dangerouslySkipPermissions !== false;
   const agentsContext = prepareAgentsContext({ cwd, name, home, agentsMd: options.agentsMd });
+  const hooksContext = options.hooks ? prepareHookSettings({ home, name, cwd, hookCommand: options.hookCommand }) : { settingsPath: undefined };
   const command = buildClaudeCommand({
     ...options,
     name: options.claudeSessionName || name,
@@ -205,6 +251,7 @@ export function startSession(options = {}) {
     effort,
     dangerouslySkipPermissions,
     agentsPromptPath: agentsContext.promptPath,
+    settingsPath: hooksContext.settingsPath,
   });
   const state = loadState(home);
   const alreadyRunning = sessionExists(tmuxSession);
@@ -230,6 +277,7 @@ export function startSession(options = {}) {
     dangerouslySkipPermissions,
     agentsFiles: agentsContext.files,
     agentsPromptPath: agentsContext.promptPath,
+    hooksSettingsPath: hooksContext.settingsPath,
     reused: alreadyRunning,
   };
   saveState(state, home);
@@ -421,6 +469,14 @@ export function getJob(id, home = DEFAULT_HOME) {
   return refreshJob(job, home);
 }
 
+export function findActiveJobForSession(sessionName, home = DEFAULT_HOME) {
+  const state = loadState(home);
+  const jobs = Object.values(state.jobs)
+    .filter((job) => job.session === sessionName)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  return jobs.find((job) => job.status !== "done" && job.status !== "timeout") ?? jobs[0];
+}
+
 export function listJobs(home = DEFAULT_HOME) {
   const state = loadState(home);
   return Object.values(state.jobs).map((job) => refreshJob(job, home));
@@ -500,6 +556,99 @@ export function readTail(file, maxBytes = 64 * 1024) {
     closeSync(fd);
   }
   return buffer.toString("utf8");
+}
+
+export function extractJobIdFromText(text) {
+  const match = String(text || "").match(/ccmux job ([0-9a-fA-F-]{36})|CCMUX_DONE:\s*([0-9a-fA-F-]{36})/);
+  return match?.[1] || match?.[2] || undefined;
+}
+
+function hookSessionMapPath(home = DEFAULT_HOME) {
+  return path.join(ensureHome(home), "hooks", "session-map.json");
+}
+
+function loadHookSessionMap(home = DEFAULT_HOME) {
+  const file = hookSessionMapPath(home);
+  if (!existsSync(file)) return {};
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function saveHookSessionMap(map, home = DEFAULT_HOME) {
+  const file = hookSessionMapPath(home);
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(map, null, 2));
+  renameSync(tmp, file);
+}
+
+export function normalizeHookEvent(input = {}, options = {}) {
+  const event = {
+    id: options.id || randomUUID(),
+    timestamp: options.timestamp || new Date().toISOString(),
+    jobId: options.jobId,
+    hookEventName: input.hook_event_name || input.hookEventName || "unknown",
+    sessionId: input.session_id || input.sessionId,
+    transcriptPath: input.transcript_path || input.transcriptPath,
+    cwd: input.cwd,
+    permissionMode: input.permission_mode || input.permissionMode,
+    toolName: input.tool_name || input.toolName,
+    toolInput: input.tool_input || input.toolInput,
+    toolResponse: input.tool_response || input.toolResponse,
+    toolUseId: input.tool_use_id || input.toolUseId,
+    prompt: input.prompt,
+    source: input.source,
+    notificationType: input.notification_type || input.notificationType,
+    message: input.message,
+    error: input.error,
+    raw: input,
+  };
+  if (!event.jobId) event.jobId = extractJobIdFromText(event.prompt) || extractJobIdFromText(JSON.stringify(input));
+  return event;
+}
+
+export function recordHookEvent(input = {}, options = {}) {
+  const home = ensureHome(options.home);
+  const map = loadHookSessionMap(home);
+  let jobId = extractJobIdFromText(input.prompt) || extractJobIdFromText(JSON.stringify(input));
+  const sessionId = input.session_id || input.sessionId;
+  if (sessionId && !jobId) jobId = map[sessionId];
+  const event = normalizeHookEvent(input, { jobId });
+  if (sessionId && event.jobId) {
+    map[sessionId] = event.jobId;
+    saveHookSessionMap(map, home);
+  }
+
+  const allPath = path.join(home, "events", "all.jsonl");
+  appendFileSync(allPath, JSON.stringify(event) + "\n");
+  if (event.jobId) {
+    const jobPath = path.join(home, "events", `${event.jobId}.jsonl`);
+    appendFileSync(jobPath, JSON.stringify(event) + "\n");
+  }
+  return event;
+}
+
+export function readHookEvents(jobId, options = {}) {
+  const home = ensureHome(options.home);
+  const file = path.join(home, "events", `${jobId}.jsonl`);
+  const offset = Number(options.offset ?? 0);
+  if (!existsSync(file)) return { events: [], nextOffset: offset, file };
+  const content = readFileSync(file, "utf8");
+  const slice = content.slice(offset);
+  const events = slice
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return undefined;
+      }
+    })
+    .filter(Boolean);
+  return { events, nextOffset: content.length, file };
 }
 
 export function stripAnsi(value) {

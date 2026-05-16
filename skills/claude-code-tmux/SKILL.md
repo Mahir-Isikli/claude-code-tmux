@@ -33,14 +33,14 @@ If the package extension is loaded, Pi registers:
 - provider: `claude-code-tmux`
 - models: `opus`, `sonnet`
 
-Use the provider when the user wants Pi itself to run on the tmux-backed Claude Code bridge. Select `claude-code-tmux/opus` from `/model` or ask the user to choose it. The provider sends Pi's recent context into a durable Claude Code tmux session and returns the final response to Pi.
+Use the provider when the user wants Pi itself to run on the tmux-backed Claude Code bridge. Select `claude-code-tmux/opus` from `/model` or ask the user to choose it. The provider sends Pi's recent context into a durable Claude Code tmux session, records Claude Code hook lifecycle/tool events, streams those events as progress, and returns the final response to Pi.
 
 Provider limitations:
 
 - It cannot emit structured Pi tool calls. Claude Code uses its own tools inside tmux.
 - File edits can happen through Claude Code, outside Pi's normal tool transcript.
-- Streaming is currently final-response oriented, with terminal capture available for debugging.
-- If it times out, inspect with `ccmux_capture` or `ccmux capture`.
+- Final answer text still comes from done JSON. Hook events are progress and observability, not perfect token streaming.
+- If it times out, inspect with `ccmux_capture`, `ccmux capture`, or `ccmux events --session <name>`.
 
 ## Prefer Pi tools for explicit delegation
 
@@ -103,6 +103,23 @@ Use an explicit file:
 ```bash
 ccmux start --name demo --cwd . --agents-md ./AGENTS.md
 ```
+
+## Testing workflow
+
+Use the bundled test suite before claiming provider changes work:
+
+```bash
+npm run check
+npm run test:provider
+```
+
+After publishing, test the npm package too:
+
+```bash
+npm run test:provider:npm
+```
+
+The provider matrix checks fresh workspaces, reused sessions, file edits, AGENTS.md import, opus, sonnet, and hook event recording.
 
 ## Robust workflow
 

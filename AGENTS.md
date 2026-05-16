@@ -17,7 +17,7 @@ The package is published on npm and GitHub:
 
 ## Current working release
 
-As of the provider reliability work, the working npm release is `0.2.1`.
+As of the hook-backed provider work, the working npm release is `0.3.0`.
 
 Important fixes in `0.2.1`:
 
@@ -27,6 +27,16 @@ Important fixes in `0.2.1`:
 - Retry paste if tmux drops it.
 - Submit with `C-m` instead of literal `Enter`.
 - Provider mode requires a done JSON with `final_response` and returns that to Pi.
+
+Important additions in `0.3.0`:
+
+- Generated Claude Code hook settings per ccmux session.
+- `bin/ccmux-hook.mjs` command hook recorder.
+- Hook events stored under `~/.pi/ccmux/events/<job-id>.jsonl`.
+- `ccmux events --job <job-id>` and `ccmux events --session <name>` for inspection.
+- Provider mode starts Claude Code with hooks enabled.
+- Provider streams hook lifecycle/tool progress as thinking/progress deltas while preserving the final response text.
+- Provider matrix script under `scripts/provider-matrix.mjs`.
 
 ## Design constraints
 
@@ -64,8 +74,8 @@ pi -e /Users/mahirisikli/Git/Personal/claude-code-tmux \
 Published npm smoke test:
 
 ```bash
-pi -e npm:claude-code-tmux@0.2.1 --list-models claude-code-tmux
-pi -e npm:claude-code-tmux@0.2.1 \
+pi -e npm:claude-code-tmux@0.3.0 --list-models claude-code-tmux
+pi -e npm:claude-code-tmux@0.3.0 \
   --model claude-code-tmux/opus \
   --thinking low \
   -p "Reply with exactly: npm provider works"
@@ -78,11 +88,18 @@ rm -rf /tmp/ccmux-provider-filetest
 mkdir -p /tmp/ccmux-provider-filetest
 cd /tmp/ccmux-provider-filetest
 printf '# file test\n' > README.md
-pi -e npm:claude-code-tmux@0.2.1 \
+pi -e npm:claude-code-tmux@0.3.0 \
   --model claude-code-tmux/opus \
   --thinking low \
   -p "Create a file named provider-native-test.txt in the current directory containing exactly this single line: native provider file edit works. Then reply exactly: file done"
 cat provider-native-test.txt
+```
+
+Full provider matrix:
+
+```bash
+npm run test:provider       # local checkout
+npm run test:provider:npm   # published npm version, after publish
 ```
 
 ## Test matrix already run
@@ -97,7 +114,7 @@ The published npm package was tested for:
 - `claude-code-tmux/opus`
 - `claude-code-tmux/sonnet`
 
-The matrix passed on `0.2.1`.
+The matrix passed on `0.2.1`. Re-run it for every provider release; `0.3.0` adds hook event assertions.
 
 ## Release workflow
 
