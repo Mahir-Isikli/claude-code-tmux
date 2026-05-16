@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -46,6 +46,7 @@ export function ensureHome(home = DEFAULT_HOME) {
   mkdirSync(path.join(root, "jobs"), { recursive: true });
   mkdirSync(path.join(root, "events"), { recursive: true });
   mkdirSync(path.join(root, "hooks"), { recursive: true });
+  mkdirSync(path.join(root, "pi-tool-requests"), { recursive: true });
   return root;
 }
 
@@ -173,6 +174,10 @@ function uniquePaths(files) {
 
 export function hookCommandPath() {
   return path.join(PACKAGE_ROOT, "bin", "ccmux-hook.mjs");
+}
+
+export function piToolCommandPath() {
+  return path.join(PACKAGE_ROOT, "bin", "ccmux-pi-tool.mjs");
 }
 
 export function buildHookCommand(options = {}) {
@@ -565,6 +570,73 @@ export function extractJobIdFromText(text) {
 
 function hookSessionMapPath(home = DEFAULT_HOME) {
   return path.join(ensureHome(home), "hooks", "session-map.json");
+}
+
+function piToolRequestDir(jobId, home = DEFAULT_HOME) {
+  const dir = path.join(ensureHome(home), "pi-tool-requests", jobId);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+export function writePiToolRequest({ jobId, id = randomUUID(), toolName, arguments: args = {}, timeoutMs }, home = DEFAULT_HOME) {
+  if (!jobId) throw new CcmuxError("writePiToolRequest requires jobId");
+  if (!toolName) throw new CcmuxError("writePiToolRequest requires toolName");
+  const dir = piToolRequestDir(jobId, home);
+  const request = {
+    id,
+    jobId,
+    toolName,
+    arguments: args,
+    timeoutMs,
+    status: "pending",
+    createdAt: new Date().toISOString(),
+  };
+  writeFileSync(path.join(dir, `${id}.request.json`), JSON.stringify(request, null, 2));
+  return request;
+}
+
+export function listPendingPiToolRequests(jobId, options = {}) {
+  const dir = piToolRequestDir(jobId, options.home);
+  const dispatched = new Set(options.dispatchedIds || []);
+  let entries = [];
+  try {
+    entries = readdirSync(dir)
+      .filter((name) => name.endsWith(".request.json"))
+      .map((name) => {
+        try {
+          return JSON.parse(readFileSync(path.join(dir, name), "utf8"));
+        } catch {
+          return undefined;
+        }
+      })
+      .filter(Boolean)
+      .filter((request) => !dispatched.has(request.id) && !existsSync(path.join(dir, `${request.id}.response.json`)));
+  } catch {
+    return [];
+  }
+  return entries.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+}
+
+export function writePiToolResponse(jobId, requestId, response, home = DEFAULT_HOME) {
+  const dir = piToolRequestDir(jobId, home);
+  const payload = {
+    requestId,
+    jobId,
+    createdAt: new Date().toISOString(),
+    ...response,
+  };
+  writeFileSync(path.join(dir, `${requestId}.response.json`), JSON.stringify(payload, null, 2));
+  return payload;
+}
+
+export function readPiToolResponse(jobId, requestId, home = DEFAULT_HOME) {
+  const file = path.join(piToolRequestDir(jobId, home), `${requestId}.response.json`);
+  if (!existsSync(file)) return undefined;
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return undefined;
+  }
 }
 
 function loadHookSessionMap(home = DEFAULT_HOME) {

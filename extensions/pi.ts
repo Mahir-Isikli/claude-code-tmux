@@ -8,6 +8,7 @@ import {
   type Model,
   type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { Type } from "typebox";
 import {
@@ -17,6 +18,8 @@ import {
   listJobs,
   listSessions,
   getJob,
+  listPendingPiToolRequests,
+  piToolCommandPath,
   prepareSessionForInput,
   readHookEvents,
   recordHookEvent,
@@ -24,6 +27,7 @@ import {
   sendPrompt,
   startSession,
   steerSession,
+  writePiToolResponse,
 } from "../src/core.mjs";
 
 const PROVIDER_ID = "claude-code-tmux";
@@ -36,6 +40,7 @@ interface ActiveProviderJob {
   sessionName: string;
   hookOffset: number;
   replayedEventIds: string[];
+  dispatchedPiToolRequestIds: string[];
 }
 
 interface CcmuxProviderState {
@@ -297,6 +302,16 @@ function streamCcmuxProvider(
       const sessionName = providerSessionName(cwd, model.id);
       const activeKey = providerJobKey(cwd, model.id);
       let active = state.activeJobs[activeKey];
+      const piToolResult = extractPiToolResult(context);
+      if (active && piToolResult) {
+        writePiToolResponse(active.id, piToolResult.requestId, piToolResult.response);
+        recordHookEvent({
+          hook_event_name: "PiNativeToolResult",
+          prompt: `ccmux job ${active.id}`,
+          tool_name: piToolResult.toolName,
+          tool_response: piToolResult.response,
+        });
+      }
 
       if (!active) {
         const effort = effortFromReasoning(options?.reasoning);
@@ -320,24 +335,31 @@ function streamCcmuxProvider(
           throw new Error(`Claude Code tmux session ${session.name} was not ready for input`);
         }
 
+        const jobId = randomUUID();
         const sent = await sendPrompt({
+          jobId,
           session: session.name,
-          prompt: buildProviderPrompt(context, model),
+          prompt: buildProviderPrompt(context, model, jobId),
           wait: false,
           protocol: true,
           requireDoneFile: true,
           pasteDelayMs: Number(process.env.CCMUX_PROVIDER_PASTE_DELAY_MS ?? 15000),
         });
-        active = { id: sent.id, sessionName: session.name, hookOffset: 0, replayedEventIds: [] };
+        active = { id: sent.id, sessionName: session.name, hookOffset: 0, replayedEventIds: [], dispatchedPiToolRequestIds: [] };
         state.activeJobs[activeKey] = active;
       }
 
       const result = await waitForProviderJob(active, output, stream, options);
       if (options?.signal?.aborted) throw new Error("Request was aborted");
 
-      if (result.kind === "toolCall") {
+      if (result.kind === "replayToolCall") {
         endThinking(output, stream);
         emitReplayToolCall(output, stream, result.event);
+        return;
+      }
+      if (result.kind === "nativePiToolCall") {
+        endThinking(output, stream);
+        emitNativePiToolCall(output, stream, active.id, result.request);
         return;
       }
 
@@ -400,7 +422,7 @@ async function waitForProviderJob(
   output: AssistantMessage,
   stream: AssistantMessageEventStream,
   options?: SimpleStreamOptions,
-): Promise<{ kind: "done"; job: any } | { kind: "toolCall"; event: any }> {
+): Promise<{ kind: "done"; job: any } | { kind: "replayToolCall"; event: any } | { kind: "nativePiToolCall"; request: any }> {
   const timeoutMs = Number(process.env.CCMUX_PROVIDER_TIMEOUT_MS ?? 20 * 60 * 1000);
   const pollMs = Number(process.env.CCMUX_PROVIDER_EVENT_POLL_MS ?? 500);
   const settleMs = Number(process.env.CCMUX_PROVIDER_SETTLE_MS ?? 2000);
@@ -410,6 +432,18 @@ async function waitForProviderJob(
   while (Date.now() - started < timeoutMs) {
     if (options?.signal?.aborted) throw new Error("Request was aborted");
 
+    const pendingPiTool = listPendingPiToolRequests(active.id, { dispatchedIds: active.dispatchedPiToolRequestIds })[0];
+    if (pendingPiTool) {
+      active.dispatchedPiToolRequestIds.push(pendingPiTool.id);
+      recordHookEvent({
+        hook_event_name: "PiNativeToolRequest",
+        prompt: `ccmux job ${active.id}`,
+        tool_name: pendingPiTool.toolName,
+        tool_input: pendingPiTool.arguments,
+      });
+      return { kind: "nativePiToolCall", request: pendingPiTool };
+    }
+
     const hookRead = readHookEvents(active.id, { offset: active.hookOffset });
     active.hookOffset = hookRead.nextOffset;
     for (const event of hookRead.events) {
@@ -417,7 +451,7 @@ async function waitForProviderJob(
       if (line) appendThinking(output, stream, `${line}\n`);
       if (isReplayableToolEvent(event) && !active.replayedEventIds.includes(event.id)) {
         active.replayedEventIds.push(event.id);
-        return { kind: "toolCall", event };
+        return { kind: "replayToolCall", event };
       }
     }
 
@@ -437,12 +471,11 @@ function isReplayableToolEvent(event: any) {
   return event.hookEventName === "PostToolUse" || event.hookEventName === "PostToolUseFailure";
 }
 
-function emitReplayToolCall(output: AssistantMessage, stream: AssistantMessageEventStream, event: any) {
-  const args = { jobId: event.jobId, eventId: event.id };
+function emitToolCall(output: AssistantMessage, stream: AssistantMessageEventStream, id: string, name: string, args: any) {
   const toolCall = {
     type: "toolCall" as const,
-    id: `ccmux-replay-${event.id}`,
-    name: "ccmux_replay_tool_result",
+    id,
+    name,
     arguments: args,
   };
   output.content.push(toolCall);
@@ -453,6 +486,14 @@ function emitReplayToolCall(output: AssistantMessage, stream: AssistantMessageEv
   output.stopReason = "toolUse";
   stream.push({ type: "done", reason: "toolUse", message: output });
   stream.end();
+}
+
+function emitReplayToolCall(output: AssistantMessage, stream: AssistantMessageEventStream, event: any) {
+  emitToolCall(output, stream, `ccmux-replay-${event.id}`, "ccmux_replay_tool_result", { jobId: event.jobId, eventId: event.id });
+}
+
+function emitNativePiToolCall(output: AssistantMessage, stream: AssistantMessageEventStream, jobId: string, request: any) {
+  emitToolCall(output, stream, `ccmux-pi-${jobId}-${request.id}`, request.toolName, request.arguments || {});
 }
 
 function formatHookProgress(event: any) {
@@ -503,12 +544,13 @@ function effortFromReasoning(reasoning?: string) {
   return "high";
 }
 
-function buildProviderPrompt(context: Context, model: Model<Api>) {
+function buildProviderPrompt(context: Context, model: Model<Api>, jobId: string) {
   const systemPrompt = truncateText(context.systemPrompt || "", 8_000);
   const messages = context.messages.slice(-14).map((message) => formatMessageForPrompt(message)).join("\n\n");
   const toolsNote = context.tools?.length
-    ? `Pi exposed ${context.tools.length} tool definitions to its model provider. You are running inside Claude Code instead, so use Claude Code's own tools when useful and return normal text to Pi. Do not emit raw JSON tool calls.`
+    ? `Pi exposed ${context.tools.length} tool definitions to its model provider. You are running inside Claude Code instead. You may use Claude Code's own tools, or call Pi native tools through the bridge below. Do not emit raw JSON tool calls.`
     : "Pi did not expose tool definitions for this request.";
+  const nativeTools = formatNativePiTools(context.tools || []);
 
   return [
     "You are serving as Pi's native claude-code-tmux provider.",
@@ -521,8 +563,37 @@ function buildProviderPrompt(context: Context, model: Model<Api>) {
     "",
     `<pi_tools_note>\n${toolsNote}\n</pi_tools_note>`,
     "",
+    `<pi_native_tool_bridge>\nTo call a Pi native tool, run this exact command pattern with Claude Code's Bash tool:\nnode ${piToolCommandPath()} --job ${jobId} --tool TOOL_NAME --args-json 'JSON_ARGUMENTS'\nThe command blocks until Pi executes the native tool and returns JSON. Prefer this bridge when the user expects Pi-native tools, browser automation, Slack, GitHub, or custom Pi tools. Available Pi tools:\n${nativeTools}\n</pi_native_tool_bridge>`,
+    "",
     `<pi_recent_messages>\n${messages}\n</pi_recent_messages>`,
   ].join("\n");
+}
+
+function formatNativePiTools(tools: any[]) {
+  const lines = tools
+    .filter((tool) => tool?.name && tool.name !== "ccmux_replay_tool_result")
+    .slice(0, 60)
+    .map((tool) => `- ${tool.name}: ${truncateText(tool.description || "", 180)} params=${truncateText(JSON.stringify(tool.parameters || {}), 500)}`);
+  return lines.join("\n") || "No Pi native tools were provided.";
+}
+
+function extractPiToolResult(context: Context) {
+  for (const message of [...context.messages].reverse() as any[]) {
+    if (message.role !== "toolResult") continue;
+    const match = String(message.toolCallId || "").match(/^ccmux-pi-([0-9a-fA-F-]{36})-([0-9a-fA-F-]{36})$/);
+    if (!match) continue;
+    return {
+      jobId: match[1],
+      requestId: match[2],
+      toolName: message.toolName,
+      response: {
+        isError: message.isError,
+        content: message.content,
+        details: message.details,
+      },
+    };
+  }
+  return undefined;
 }
 
 function formatMessageForPrompt(message: any) {

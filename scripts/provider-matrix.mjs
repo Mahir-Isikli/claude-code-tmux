@@ -98,22 +98,28 @@ try {
   const fileContent = readFileSync(path.join(root, "matrix-provider-file.txt"), "utf8").trim();
   if (fileContent !== "matrix file edit ok") throw new Error(`Unexpected file content: ${fileContent}`);
 
-  console.log("5 AGENTS.md import");
+  console.log("5 native Pi tool bridge");
+  const nativePi = clean(pi("--model claude-code-tmux/opus --thinking low -p 'Use the Pi native tool bridge command from your instructions to call the Pi read tool on README.md. Do not use Claude Code local Read. After the bridge returns, reply exactly: native pi read ok'"));
+  console.log(nativePi);
+  assertIncludes("native-pi", nativePi, "native pi read ok");
+
+  console.log("6 AGENTS.md import");
   const agents = clean(pi("--model claude-code-tmux/opus --thinking low -p 'What is the AGENTS_CHECK phrase? Reply exactly with the phrase from local AGENTS.md and nothing else.'"));
   console.log(agents);
   assertIncludes("agents", agents, "agents import works");
 
-  console.log("6 sonnet provider call");
+  console.log("7 sonnet provider call");
   const sonnet = clean(pi("--model claude-code-tmux/sonnet --thinking low -p 'Reply with exactly: sonnet provider ok'"));
   console.log(sonnet);
   assertIncludes("sonnet", sonnet, "sonnet provider ok");
 
-  console.log("7 hook events and shadow replay recorded");
+  console.log("8 hook events, native Pi tool, and shadow replay recorded");
   const status = JSON.parse(ccmux("status"));
   const matrixJobs = (status.jobs || []).filter((job) => String(job.cwd || "").includes(path.basename(root)));
   if (matrixJobs.length < 5) throw new Error(`Expected at least 5 matrix jobs, got ${matrixJobs.length}`);
   const eventfulJobs = [];
   const replayJobs = [];
+  const nativeToolJobs = [];
   for (const job of matrixJobs) {
     const result = JSON.parse(ccmux(`events --job ${shell(job.id)}`));
     const events = result.events || [];
@@ -123,9 +129,13 @@ try {
     if (events.some((event) => event.hookEventName === "PiReplayToolResult")) {
       replayJobs.push(job);
     }
+    if (events.some((event) => event.hookEventName === "PiNativeToolRequest") && events.some((event) => event.hookEventName === "PiNativeToolResult")) {
+      nativeToolJobs.push(job);
+    }
   }
   if (eventfulJobs.length < 3) throw new Error(`Expected hook events on at least 3 jobs, got ${eventfulJobs.length}`);
   if (replayJobs.length < 1) throw new Error("Expected at least one PiReplayToolResult event from shadow replay");
+  if (nativeToolJobs.length < 1) throw new Error("Expected at least one Pi native tool request/result pair");
 
   console.log("MATRIX_OK");
 } finally {

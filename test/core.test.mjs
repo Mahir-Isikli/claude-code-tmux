@@ -10,11 +10,15 @@ import {
   discoverAgentsMd,
   extractJobIdFromText,
   prepareAgentsContext,
+  listPendingPiToolRequests,
   prepareHookSettings,
   readHookEvents,
+  readPiToolResponse,
   recordHookEvent,
   safeName,
   stripAnsi,
+  writePiToolRequest,
+  writePiToolResponse,
 } from "../src/core.mjs";
 
 test("safeName keeps tmux-safe names", () => {
@@ -99,6 +103,22 @@ test("recordHookEvent maps Claude hook session ids to ccmux job ids", () => {
     assert.deepEqual(events.map((event) => event.hookEventName), ["UserPromptSubmit", "PreToolUse", "PostToolUse"]);
     assert.equal(events[1].toolName, "Bash");
     assert.equal(events[1].toolInput.command, "npm test");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi tool request broker stores pending requests and responses", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ccmux-pi-tool-"));
+  const jobId = "22222222-2222-4222-8222-222222222222";
+  try {
+    const request = writePiToolRequest({ jobId, id: "33333333-3333-4333-8333-333333333333", toolName: "read", arguments: { path: "README.md" } }, root);
+    assert.equal(request.toolName, "read");
+    assert.equal(listPendingPiToolRequests(jobId, { home: root }).length, 1);
+    writePiToolResponse(jobId, request.id, { content: [{ type: "text", text: "ok" }], details: { ok: true } }, root);
+    assert.equal(listPendingPiToolRequests(jobId, { home: root }).length, 0);
+    const response = readPiToolResponse(jobId, request.id, root);
+    assert.equal(response.details.ok, true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
