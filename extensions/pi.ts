@@ -13,6 +13,7 @@ import path from "node:path";
 import { Type } from "typebox";
 import {
   DEFAULT_EFFORT,
+  DEFAULT_HOME,
   DEFAULT_MODEL,
   captureSession,
   listJobs,
@@ -551,6 +552,7 @@ function buildProviderPrompt(context: Context, model: Model<Api>, jobId: string)
     ? `Pi exposed ${context.tools.length} tool definitions to its model provider. You are running inside Claude Code instead. You may use Claude Code's own tools, or call Pi native tools through the bridge below. Do not emit raw JSON tool calls.`
     : "Pi did not expose tool definitions for this request.";
   const nativeTools = formatNativePiTools(context.tools || []);
+  const bridgeCommand = `node ${piToolCommandPath()} call --home ${DEFAULT_HOME} --job ${jobId} --tool TOOL_NAME --args-json 'JSON_ARGUMENTS'`;
 
   return [
     "You are serving as Pi's native claude-code-tmux provider.",
@@ -563,7 +565,7 @@ function buildProviderPrompt(context: Context, model: Model<Api>, jobId: string)
     "",
     `<pi_tools_note>\n${toolsNote}\n</pi_tools_note>`,
     "",
-    `<pi_native_tool_bridge>\nTo call a Pi native tool, run this exact command pattern with Claude Code's Bash tool:\nnode ${piToolCommandPath()} --job ${jobId} --tool TOOL_NAME --args-json 'JSON_ARGUMENTS'\nThe command blocks until Pi executes the native tool and returns JSON. Prefer this bridge when the user expects Pi-native tools, browser automation, Slack, GitHub, or custom Pi tools. Available Pi tools:\n${nativeTools}\n</pi_native_tool_bridge>`,
+    `<pi_native_tool_bridge>\nTo call a Pi native tool, run this exact command pattern with Claude Code's Bash tool:\n${bridgeCommand}\nThis creates a request that Pi can see, waits for Pi to execute the native tool, and then prints the tool result as JSON. Prefer this bridge when the user expects Pi-native tools, browser automation, Slack, GitHub, or custom Pi tools. Available Pi tools:\n${nativeTools}\n</pi_native_tool_bridge>`,
     "",
     `<pi_recent_messages>\n${messages}\n</pi_recent_messages>`,
   ].join("\n");
