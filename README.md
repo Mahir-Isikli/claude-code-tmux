@@ -15,6 +15,54 @@ If non-interactive Claude Code usage becomes a paid programmatic path, a local a
 
 ## Install
 
+Requirements:
+
+- `tmux` on PATH
+- `claude` on PATH
+- a normal Claude Code login or configured Claude Code auth
+- Pi, if you want the provider or extension tools
+
+### Clean Pi provider setup
+
+Install the package into Pi:
+
+```bash
+pi install npm:claude-code-tmux
+```
+
+Restart or reload Pi, then pick the provider from `/model`:
+
+```text
+claude-code-tmux/opus
+```
+
+or:
+
+```text
+claude-code-tmux/sonnet
+```
+
+You can verify the provider is installed with:
+
+```bash
+pi -e npm:claude-code-tmux --list-models claude-code-tmux
+```
+
+Then use Pi normally. When Pi calls the provider, `ccmux` starts or reuses an interactive Claude Code session in tmux, relays the turn to it, and returns the final response to Pi.
+
+### CLI install
+
+```bash
+npm install -g claude-code-tmux
+ccmux --help
+```
+
+One-off CLI usage without global install:
+
+```bash
+npx -y -p claude-code-tmux ccmux --help
+```
+
 Local development:
 
 ```bash
@@ -23,25 +71,6 @@ cd claude-code-tmux
 npm install
 npm link
 ```
-
-From npm:
-
-```bash
-npm install -g claude-code-tmux
-ccmux --help
-
-# or one-off
-npx -y -p claude-code-tmux ccmux --help
-
-# install the Pi extension plus bundled skill
-pi install npm:claude-code-tmux
-```
-
-Requirements:
-
-- `tmux` on PATH
-- `claude` on PATH
-- A normal Claude Code login or configured Claude Code auth
 
 ## CLI usage
 
@@ -98,10 +127,16 @@ ccmux kill --session demo
 
 ## Pi usage
 
-Install the package into Pi:
+Install the package into Pi from npm:
 
 ```bash
-pi install /absolute/path/to/claude-code-tmux
+pi install npm:claude-code-tmux
+```
+
+For local development, use the checkout path instead:
+
+```bash
+pi -e /absolute/path/to/claude-code-tmux --list-models claude-code-tmux
 ```
 
 The extension registers a native Pi provider:
@@ -184,5 +219,7 @@ This package is a terminal automation layer around the official interactive Clau
 
 - Terminal completion detection is heuristic.
 - `ccmux` starts Claude Code with `--dangerously-skip-permissions` by default. Use `--safe-permissions` if you want Claude Code prompts.
-- It is not a Pi model provider. In Pi, it is a subagent tool that can edit files through Claude Code.
-- Streaming is based on terminal capture, not structured Claude Code events.
+- The Pi provider is best-effort terminal automation behind a normal provider entry.
+- Claude Code uses its own tools inside tmux, so Pi does not receive structured Pi tool calls from this provider.
+- File edits can happen through Claude Code, outside Pi's normal tool transcript.
+- Streaming is currently final-response oriented. Use `ccmux_capture` or `ccmux capture` for terminal inspection.
