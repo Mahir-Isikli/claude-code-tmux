@@ -19,6 +19,7 @@ import {
   getJob,
   prepareSessionForInput,
   readHookEvents,
+  recordHookEvent,
   safeName,
   sendPrompt,
   startSession,
@@ -30,13 +31,21 @@ const PROVIDER_API = "claude-code-tmux-api";
 const PROVIDER_BASE_URL = "tmux://claude-code";
 const PROVIDER_API_KEY = "ccmux-local";
 
+interface ActiveProviderJob {
+  id: string;
+  sessionName: string;
+  hookOffset: number;
+  replayedEventIds: string[];
+}
+
 interface CcmuxProviderState {
   cwd: string;
   activeProviderSession?: string;
+  activeJobs: Record<string, ActiveProviderJob>;
 }
 
 export default function (pi: ExtensionAPI) {
-  const providerState: CcmuxProviderState = { cwd: process.cwd() };
+  const providerState: CcmuxProviderState = { cwd: process.cwd(), activeJobs: {} };
 
   pi.on("session_start", async (_event, ctx) => {
     providerState.cwd = ctx.cwd;
@@ -56,6 +65,37 @@ export default function (pi: ExtensionAPI) {
       providerModel("sonnet", "Claude Code tmux Sonnet"),
     ],
     streamSimple: (model, context, options) => streamCcmuxProvider(model, context, options, providerState),
+  });
+
+  pi.registerTool({
+    name: "ccmux_replay_tool_result",
+    label: "Replay Claude Code tool result",
+    description: "Replay an already-executed Claude Code tool event into Pi's transcript. This does not run the tool again.",
+    parameters: Type.Object({
+      jobId: Type.String({ description: "ccmux job id." }),
+      eventId: Type.String({ description: "Recorded Claude Code hook event id." }),
+    }),
+    async execute(_toolCallId, params) {
+      const event = readHookEvents(params.jobId).events.find((event: any) => event.id === params.eventId);
+      if (!event) {
+        return {
+          content: [{ type: "text", text: `No recorded Claude Code hook event ${params.eventId} for job ${params.jobId}.` }],
+          isError: true,
+          details: { jobId: params.jobId, eventId: params.eventId },
+        };
+      }
+      recordHookEvent({
+        hook_event_name: "PiReplayToolResult",
+        prompt: `ccmux job ${params.jobId}`,
+        tool_name: event.toolName,
+        tool_input: event.toolInput,
+        tool_response: event.toolResponse,
+      });
+      return {
+        content: [{ type: "text", text: formatReplayToolResult(event) }],
+        details: { event },
+      };
+    },
   });
 
   pi.registerTool({
@@ -255,41 +295,55 @@ function streamCcmuxProvider(
     try {
       const cwd = state.cwd || process.cwd();
       const sessionName = providerSessionName(cwd, model.id);
-      const effort = effortFromReasoning(options?.reasoning);
-      const session = startSession({
-        name: sessionName,
-        cwd,
-        model: model.id,
-        effort,
-        dangerouslySkipPermissions: true,
-        agentsMd: true,
-        hooks: true,
-      });
-      state.activeProviderSession = session.name;
-      if (!session.reused) {
-        sleepSync(Number(process.env.CCMUX_PROVIDER_STARTUP_DELAY_MS ?? 8000));
-      }
-      const readiness = prepareSessionForInput(session, {
-        timeoutMs: Number(process.env.CCMUX_PROVIDER_READY_TIMEOUT_MS ?? 45_000),
-      });
-      if (!readiness.ready) {
-        throw new Error(`Claude Code tmux session ${session.name} was not ready for input`);
+      const activeKey = providerJobKey(cwd, model.id);
+      let active = state.activeJobs[activeKey];
+
+      if (!active) {
+        const effort = effortFromReasoning(options?.reasoning);
+        const session = startSession({
+          name: sessionName,
+          cwd,
+          model: model.id,
+          effort,
+          dangerouslySkipPermissions: true,
+          agentsMd: true,
+          hooks: true,
+        });
+        state.activeProviderSession = session.name;
+        if (!session.reused) {
+          sleepSync(Number(process.env.CCMUX_PROVIDER_STARTUP_DELAY_MS ?? 8000));
+        }
+        const readiness = prepareSessionForInput(session, {
+          timeoutMs: Number(process.env.CCMUX_PROVIDER_READY_TIMEOUT_MS ?? 45_000),
+        });
+        if (!readiness.ready) {
+          throw new Error(`Claude Code tmux session ${session.name} was not ready for input`);
+        }
+
+        const sent = await sendPrompt({
+          session: session.name,
+          prompt: buildProviderPrompt(context, model),
+          wait: false,
+          protocol: true,
+          requireDoneFile: true,
+          pasteDelayMs: Number(process.env.CCMUX_PROVIDER_PASTE_DELAY_MS ?? 15000),
+        });
+        active = { id: sent.id, sessionName: session.name, hookOffset: 0, replayedEventIds: [] };
+        state.activeJobs[activeKey] = active;
       }
 
-      const sent = await sendPrompt({
-        session: session.name,
-        prompt: buildProviderPrompt(context, model),
-        wait: false,
-        protocol: true,
-        requireDoneFile: true,
-        pasteDelayMs: Number(process.env.CCMUX_PROVIDER_PASTE_DELAY_MS ?? 15000),
-      });
-
-      const job = await waitForProviderJob(sent.id, output, stream, options);
+      const result = await waitForProviderJob(active, output, stream, options);
       if (options?.signal?.aborted) throw new Error("Request was aborted");
 
+      if (result.kind === "toolCall") {
+        endThinking(output, stream);
+        emitReplayToolCall(output, stream, result.event);
+        return;
+      }
+
+      delete state.activeJobs[activeKey];
       endThinking(output, stream);
-      const text = providerResponseFromJob(job);
+      const text = providerResponseFromJob(result.job);
       startText(output, stream);
       appendText(output, stream, text);
       stream.push({ type: "text_end", contentIndex: output.content.length - 1, content: text, partial: output });
@@ -342,38 +396,63 @@ function endThinking(output: AssistantMessage, stream: AssistantMessageEventStre
 }
 
 async function waitForProviderJob(
-  jobId: string,
+  active: ActiveProviderJob,
   output: AssistantMessage,
   stream: AssistantMessageEventStream,
   options?: SimpleStreamOptions,
-) {
+): Promise<{ kind: "done"; job: any } | { kind: "toolCall"; event: any }> {
   const timeoutMs = Number(process.env.CCMUX_PROVIDER_TIMEOUT_MS ?? 20 * 60 * 1000);
   const pollMs = Number(process.env.CCMUX_PROVIDER_EVENT_POLL_MS ?? 500);
   const settleMs = Number(process.env.CCMUX_PROVIDER_SETTLE_MS ?? 2000);
   const started = Date.now();
-  let hookOffset = 0;
   let doneFileFirstSeenAt: number | undefined;
 
   while (Date.now() - started < timeoutMs) {
     if (options?.signal?.aborted) throw new Error("Request was aborted");
 
-    const hookRead = readHookEvents(jobId, { offset: hookOffset });
-    hookOffset = hookRead.nextOffset;
+    const hookRead = readHookEvents(active.id, { offset: active.hookOffset });
+    active.hookOffset = hookRead.nextOffset;
     for (const event of hookRead.events) {
       const line = formatHookProgress(event);
       if (line) appendThinking(output, stream, `${line}\n`);
+      if (isReplayableToolEvent(event) && !active.replayedEventIds.includes(event.id)) {
+        active.replayedEventIds.push(event.id);
+        return { kind: "toolCall", event };
+      }
     }
 
-    const job = getJob(jobId);
-    if (job.markerSeen) return job;
+    const job = getJob(active.id);
+    if (job.markerSeen) return { kind: "done", job };
     if (job.doneFile) {
       doneFileFirstSeenAt ??= Date.now();
-      if (Date.now() - doneFileFirstSeenAt >= settleMs) return getJob(jobId);
+      if (Date.now() - doneFileFirstSeenAt >= settleMs) return { kind: "done", job: getJob(active.id) };
     }
     await sleep(pollMs);
   }
 
-  return { ...getJob(jobId), status: "timeout" };
+  return { kind: "done", job: { ...getJob(active.id), status: "timeout" } };
+}
+
+function isReplayableToolEvent(event: any) {
+  return event.hookEventName === "PostToolUse" || event.hookEventName === "PostToolUseFailure";
+}
+
+function emitReplayToolCall(output: AssistantMessage, stream: AssistantMessageEventStream, event: any) {
+  const args = { jobId: event.jobId, eventId: event.id };
+  const toolCall = {
+    type: "toolCall" as const,
+    id: `ccmux-replay-${event.id}`,
+    name: "ccmux_replay_tool_result",
+    arguments: args,
+  };
+  output.content.push(toolCall);
+  const contentIndex = output.content.length - 1;
+  stream.push({ type: "toolcall_start", contentIndex, partial: output });
+  stream.push({ type: "toolcall_delta", contentIndex, delta: JSON.stringify(args), partial: output });
+  stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: output });
+  output.stopReason = "toolUse";
+  stream.push({ type: "done", reason: "toolUse", message: output });
+  stream.end();
 }
 
 function formatHookProgress(event: any) {
@@ -397,6 +476,20 @@ function formatToolInput(event: any) {
   if (pathValue) return `(${pathValue})`;
   if (event.toolName === "Bash" && input.command) return `(${truncateText(String(input.command), 120)})`;
   return "";
+}
+
+function formatReplayToolResult(event: any) {
+  const lines = [
+    `Claude Code ${event.hookEventName === "PostToolUseFailure" ? "failed" : "completed"} tool: ${event.toolName || "tool"}`,
+  ];
+  if (event.toolInput) lines.push(`Input: ${truncateText(JSON.stringify(event.toolInput), 2000)}`);
+  if (event.toolResponse) lines.push(`Result: ${truncateText(JSON.stringify(event.toolResponse), 4000)}`);
+  if (event.error) lines.push(`Error: ${truncateText(String(event.error), 2000)}`);
+  return lines.join("\n");
+}
+
+function providerJobKey(cwd: string, modelId: string) {
+  return `${path.resolve(cwd)}::${modelId}`;
 }
 
 function providerSessionName(cwd: string, modelId: string) {

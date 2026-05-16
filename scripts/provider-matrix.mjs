@@ -108,20 +108,24 @@ try {
   console.log(sonnet);
   assertIncludes("sonnet", sonnet, "sonnet provider ok");
 
-  console.log("7 hook events recorded");
+  console.log("7 hook events and shadow replay recorded");
   const status = JSON.parse(ccmux("status"));
   const matrixJobs = (status.jobs || []).filter((job) => String(job.cwd || "").includes(path.basename(root)));
   if (matrixJobs.length < 5) throw new Error(`Expected at least 5 matrix jobs, got ${matrixJobs.length}`);
-  const eventfulJobs = matrixJobs.filter((job) => {
-    try {
-      const result = JSON.parse(ccmux(`events --job ${shell(job.id)}`));
-      return (result.events || []).some((event) => event.hookEventName === "UserPromptSubmit") &&
-        (result.events || []).some((event) => event.hookEventName === "Stop");
-    } catch {
-      return false;
+  const eventfulJobs = [];
+  const replayJobs = [];
+  for (const job of matrixJobs) {
+    const result = JSON.parse(ccmux(`events --job ${shell(job.id)}`));
+    const events = result.events || [];
+    if (events.some((event) => event.hookEventName === "UserPromptSubmit") && events.some((event) => event.hookEventName === "Stop")) {
+      eventfulJobs.push(job);
     }
-  });
+    if (events.some((event) => event.hookEventName === "PiReplayToolResult")) {
+      replayJobs.push(job);
+    }
+  }
   if (eventfulJobs.length < 3) throw new Error(`Expected hook events on at least 3 jobs, got ${eventfulJobs.length}`);
+  if (replayJobs.length < 1) throw new Error("Expected at least one PiReplayToolResult event from shadow replay");
 
   console.log("MATRIX_OK");
 } finally {
