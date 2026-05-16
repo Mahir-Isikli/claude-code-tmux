@@ -222,6 +222,12 @@ Fast unit checks:
 npm run check
 ```
 
+Deterministic CI-safe package smoke. This does not need Claude Code auth, Pi, or tmux:
+
+```bash
+npm run test:ci
+```
+
 Full local provider matrix. This starts real Claude Code tmux sessions and can take a few minutes:
 
 ```bash
@@ -234,7 +240,16 @@ Published npm matrix, useful after a release:
 npm run test:provider:npm
 ```
 
-The provider matrix covers:
+The deterministic CI suite covers:
+
+- package manifest and tarball contents
+- CLI bin smoke
+- bundled skill frontmatter
+- hook event broker
+- hook CLI recorder
+- native Pi tool request/response broker
+
+The real provider matrix covers:
 
 - provider registration
 - fresh workspace trust prompt handling

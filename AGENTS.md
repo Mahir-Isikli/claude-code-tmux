@@ -88,8 +88,8 @@ pi -e /Users/mahirisikli/Git/Personal/claude-code-tmux \
 Published npm smoke test:
 
 ```bash
-pi -e npm:claude-code-tmux@0.5.0 --list-models claude-code-tmux
-pi -e npm:claude-code-tmux@0.5.0 \
+pi -e npm:claude-code-tmux@0.6.0 --list-models claude-code-tmux
+pi -e npm:claude-code-tmux@0.6.0 \
   --model claude-code-tmux/opus \
   --thinking low \
   -p "Reply with exactly: npm provider works"
@@ -102,17 +102,23 @@ rm -rf /tmp/ccmux-provider-filetest
 mkdir -p /tmp/ccmux-provider-filetest
 cd /tmp/ccmux-provider-filetest
 printf '# file test\n' > README.md
-pi -e npm:claude-code-tmux@0.5.0 \
+pi -e npm:claude-code-tmux@0.6.0 \
   --model claude-code-tmux/opus \
   --thinking low \
   -p "Create a file named provider-native-test.txt in the current directory containing exactly this single line: native provider file edit works. Then reply exactly: file done"
 cat provider-native-test.txt
 ```
 
+Deterministic CI-safe package smoke:
+
+```bash
+npm run test:ci
+```
+
 Full provider matrix:
 
 ```bash
-npm run test:provider       # local checkout
+npm run test:provider       # local checkout, requires pi + tmux + Claude auth
 npm run test:provider:npm   # published npm version, after publish
 ```
 
@@ -127,8 +133,11 @@ The published npm package was tested for:
 - `AGENTS.md` import through provider
 - `claude-code-tmux/opus`
 - `claude-code-tmux/sonnet`
+- native Pi tool bridge
+- hook event recording
+- shadow replay
 
-The matrix passed on `0.2.1`, `0.3.0`, `0.4.0`, and `0.5.0`. Re-run it for every provider release; `0.5.0` adds native Pi tool bridge assertions.
+The matrix passed on `0.2.1`, `0.3.0`, `0.4.0`, and `0.5.0`. Re-run it for every provider release; `0.6.0` adds deterministic CI smoke coverage.
 
 ## Release workflow
 

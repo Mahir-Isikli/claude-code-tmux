@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const DEFAULT_HOME = path.join(os.homedir(), ".pi", "ccmux");
+export const DEFAULT_HOME = process.env.CCMUX_HOME || path.join(os.homedir(), ".pi", "ccmux");
 export const DEFAULT_MODEL = process.env.CCMUX_MODEL || "opus";
 export const DEFAULT_EFFORT = process.env.CCMUX_EFFORT || "high";
 export const STATE_VERSION = 1;

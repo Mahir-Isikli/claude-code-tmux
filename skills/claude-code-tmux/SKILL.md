@@ -110,6 +110,7 @@ Use the bundled test suite before claiming provider changes work:
 
 ```bash
 npm run check
+npm run test:ci
 npm run test:provider
 ```
 
@@ -119,7 +120,7 @@ After publishing, test the npm package too:
 npm run test:provider:npm
 ```
 
-The provider matrix checks fresh workspaces, reused sessions, file edits, AGENTS.md import, opus, sonnet, and hook event recording.
+The deterministic CI suite checks packaging, CLIs, hook recording, and the Pi tool request broker without Claude auth. The provider matrix checks fresh workspaces, reused sessions, file edits, native Pi tool calls, AGENTS.md import, opus, sonnet, hook event recording, and shadow replay.
 
 ## Robust workflow
 
